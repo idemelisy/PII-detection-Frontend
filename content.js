@@ -5,6 +5,11 @@ console.log("PII Detector Content Script Loaded! (MOCK MODE)");
 // Highlighting class (must synchronize with style.css)
 const HIGHLIGHT_CLASS = 'pii-highlight'; 
 const REDACT_BTN_CLASS = 'pii-redact-btn';
+const SUGGESTION_POPUP_CLASS = 'pii-suggestion-popup';
+const REJECTED_CLASS = 'pii-rejected';
+
+// Track suggestion states
+const suggestionStates = new Map(); // Store accept/reject decisions
 
 // Mock PII data matching the user's document text for testing highlighting
 const MOCK_PII_DATA = {
@@ -186,6 +191,23 @@ function findContentArea() {
   return document.body;
 }
 
+// Generate unique suggestion ID
+function generateSuggestionId() {
+    return 'suggestion_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+}
+
+// Get redaction label based on PII type
+function getRedactionLabel(piiType) {
+    const labels = {
+        'PERSON': '[NAME]',
+        'LOCATION': '[LOCATION]', 
+        'EMAIL': '[EMAIL]',
+        'PHONE': '[PHONE]',
+        'ORGANIZATION': '[ORGANIZATION]'
+    };
+    return labels[piiType] || '[REDACTED]';
+}
+
 // Simplified text node finder without aggressive filtering
 function getSimpleTextNodesIn(element) {
     const textNodes = [];
@@ -220,6 +242,7 @@ function clearHighlights(showAlert = true) {
     // Clear regular highlights by replacing HTML
     const editor = findContentArea();
     let highlightedElements = [];
+    let redactedElements = [];
     let textHighlightCount = 0;
     
     if (editor) {
@@ -227,10 +250,22 @@ function clearHighlights(showAlert = true) {
         highlightedElements = editor.querySelectorAll(`.${HIGHLIGHT_CLASS}`);
         textHighlightCount = highlightedElements.length;
         
+        // Find redacted spans
+        redactedElements = editor.querySelectorAll('.pii-redacted');
+        
+        // Replace highlights with original text
         if (textHighlightCount > 0) {
-            // Replace each highlight span with its text content
             highlightedElements.forEach(el => {
                 const textNode = document.createTextNode(el.textContent);
+                el.parentNode.replaceChild(textNode, el);
+            });
+        }
+        
+        // Replace redacted items with original text
+        if (redactedElements.length > 0) {
+            redactedElements.forEach(el => {
+                const originalValue = el.getAttribute('data-original-value') || el.textContent;
+                const textNode = document.createTextNode(originalValue);
                 el.parentNode.replaceChild(textNode, el);
             });
         }
@@ -240,11 +275,17 @@ function clearHighlights(showAlert = true) {
     const overlayElements = document.querySelectorAll('.pii-overlay-highlight');
     overlayElements.forEach(el => el.remove());
     
-    const totalCleared = textHighlightCount + overlayElements.length;
+    // Clear any open suggestion popups
+    document.querySelectorAll(`.${SUGGESTION_POPUP_CLASS}`).forEach(popup => popup.remove());
+    
+    // Reset suggestion states
+    suggestionStates.clear();
+    
+    const totalCleared = textHighlightCount + redactedElements.length + overlayElements.length;
     
     // Only show alert if explicitly requested and there were highlights to clear
     if (showAlert && totalCleared > 0) {
-        alert(`Highlights cleared. (${textHighlightCount} text highlights + ${overlayElements.length} overlay highlights)`);
+        alert(`All highlights and redactions cleared. (${textHighlightCount} highlights + ${redactedElements.length} redactions + ${overlayElements.length} overlays)`);
     } else if (showAlert && totalCleared === 0) {
         alert("No highlights to clear.");
     }
@@ -269,7 +310,7 @@ async function handleScanClick() {
   
   // 2. Process results and highlight
   if (piiResults && piiResults.detected_entities && piiResults.detected_entities.length > 0) {
-      alert(`Scan complete! ${piiResults.total_entities} PII items found. Click the highlighted words to Redact.`);
+      alert(`Scan complete! ${piiResults.total_entities} PII suggestions found. Click highlighted text to review and accept/reject each suggestion.`);
       highlightPiiInDocument(piiResults.detected_entities);
   } else {
       alert("Scan complete, no PII found.");
@@ -313,8 +354,8 @@ function highlightPiiInDocument(entities) {
         // Use \b for word boundaries, but make it flexible for non-English characters
         const regex = new RegExp(`(?<!<[^>]*)(${escapedValue})(?![^<]*>)`, 'gi');
         
-        // Create the highlight HTML structure
-        const highlightHTML = `<span class="${HIGHLIGHT_CLASS}" data-pii-type="${entity.type}" data-pii-value="${entity.value}">$1</span>`;
+        // Create the highlight HTML structure with suggestion functionality
+        const highlightHTML = `<span class="${HIGHLIGHT_CLASS}" data-pii-type="${entity.type}" data-pii-value="${entity.value}" data-suggestion-id="${generateSuggestionId()}">$1</span>`;
         
         // Count matches before replacement
         const matches = currentHTML.match(regex);
@@ -342,7 +383,7 @@ function highlightPiiInDocument(entities) {
             // Add click events to the newly created highlight spans
             addRedactEvents();
             
-            alert(`Highlighting complete! Found and highlighted ${highlightCount} PII instances. Click any highlighted text to redact it.`);
+            alert(`Highlighting complete! Found ${highlightCount} PII suggestions. Click any highlighted text to review and accept/reject.`);
         } catch (error) {
             console.error("Error applying HTML changes:", error);
             
@@ -462,13 +503,20 @@ function highlightTextInNode(textNode, startIndex, length, entity) {
     }
 }
 
-// Adds click listeners to the highlighted PII spans
+// Adds click listeners to the highlighted PII spans for suggestions
 function addRedactEvents() {
     document.querySelectorAll(`.${HIGHLIGHT_CLASS}`).forEach(el => {
+        // Skip if already processed or rejected
+        if (el.classList.contains(REJECTED_CLASS)) return;
+        
         el.onclick = (event) => {
-            event.stopPropagation(); // Prevents interference with Docs editor
-            handleRedactClick(el);
+            event.stopPropagation(); // Prevents interference with page editor
+            showSuggestionPopup(el);
         };
+        
+        // Add hover effect
+        el.style.cursor = 'pointer';
+        el.title = 'Click to review PII suggestion';
     });
 }
 
@@ -527,7 +575,7 @@ function highlightWithOverlay(entities) {
     
     if (highlightCount > 0) {
         console.log(`Successfully created ${highlightCount} overlay highlights`);
-        alert(`Overlay highlighting complete! Found ${highlightCount} PII items with yellow highlights.`);
+        alert(`Overlay highlighting complete! Found ${highlightCount} PII suggestions. Click yellow boxes to review and accept/reject.`);
     } else {
         alert("Could not create overlay highlights. The text might not be accessible for positioning.");
     }
@@ -561,12 +609,13 @@ function getTextPosition(element, fullText, startIndex, length) {
     }
 }
 
-// Create an overlay highlight element
+// Create an overlay highlight element with suggestion support
 function createOverlayHighlight(rect, entity) {
     const overlay = document.createElement('div');
     overlay.className = 'pii-overlay-highlight';
     overlay.setAttribute('data-pii-type', entity.type);
     overlay.setAttribute('data-pii-value', entity.value);
+    overlay.setAttribute('data-suggestion-id', generateSuggestionId());
     
     overlay.style.position = 'absolute';
     overlay.style.left = rect.left + 'px';
@@ -581,32 +630,280 @@ function createOverlayHighlight(rect, entity) {
     overlay.style.zIndex = '999999';
     overlay.style.boxSizing = 'border-box';
     
-    // Add click handler for redaction
+    // Add click handler for suggestions
     overlay.onclick = (event) => {
         event.stopPropagation();
-        handleOverlayRedact(overlay);
+        showOverlaySuggestionPopup(overlay);
     };
     
     // Add tooltip
-    overlay.title = `Click to redact ${entity.type}: ${entity.value}`;
+    overlay.title = `Click to review ${entity.type}: ${entity.value}`;
     
     document.body.appendChild(overlay);
 }
 
-// Handle redaction for overlay highlights
-function handleOverlayRedact(overlay) {
-    const piiValue = overlay.getAttribute('data-pii-value');
-    const piiType = overlay.getAttribute('data-pii-type');
+// Show suggestion popup for overlay highlights
+function showOverlaySuggestionPopup(overlayElement) {
+    // Remove any existing popups
+    document.querySelectorAll(`.${SUGGESTION_POPUP_CLASS}`).forEach(popup => popup.remove());
+    
+    const piiValue = overlayElement.getAttribute('data-pii-value');
+    const piiType = overlayElement.getAttribute('data-pii-type');
+    const suggestionId = overlayElement.getAttribute('data-suggestion-id');
+    
+    // Create popup similar to regular suggestion popup
+    const popup = document.createElement('div');
+    popup.className = SUGGESTION_POPUP_CLASS;
+    popup.style.cssText = `
+        position: fixed;
+        background: white;
+        border: 2px solid #2196F3;
+        border-radius: 8px;
+        padding: 16px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        z-index: 999999;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        font-size: 14px;
+        min-width: 300px;
+        max-width: 400px;
+    `;
+    
+    // Position popup near the overlay
+    const rect = overlayElement.getBoundingClientRect();
+    popup.style.left = Math.min(rect.left, window.innerWidth - 420) + 'px';
+    popup.style.top = (rect.bottom + 10) + 'px';
+    
+    // Create popup content
+    popup.innerHTML = `
+        <div style="margin-bottom: 12px;">
+            <strong style="color: #1976D2;">PII Detected (Overlay Mode)</strong>
+        </div>
+        <div style="margin-bottom: 8px;">
+            <strong>Type:</strong> ${piiType}
+        </div>
+        <div style="margin-bottom: 8px;">
+            <strong>Value:</strong> "<span style="background: #FFD54F; padding: 2px 4px; border-radius: 3px;">${piiValue}</span>"
+        </div>
+        <div style="margin-bottom: 16px;">
+            <strong>Will become:</strong> "<span style="background: #F44336; color: white; padding: 2px 4px; border-radius: 3px;">${getRedactionLabel(piiType)}</span>"
+        </div>
+        <div style="display: flex; gap: 8px; justify-content: flex-end;">
+            <button id="reject-overlay-btn" style="
+                background: #F44336; 
+                color: white; 
+                border: none; 
+                padding: 8px 16px; 
+                border-radius: 4px; 
+                cursor: pointer;
+                font-size: 13px;
+            ">✕ Reject</button>
+            <button id="accept-overlay-btn" style="
+                background: #4CAF50; 
+                color: white; 
+                border: none; 
+                padding: 8px 16px; 
+                border-radius: 4px; 
+                cursor: pointer;
+                font-size: 13px;
+            ">✓ Accept</button>
+        </div>
+    `;
+    
+    document.body.appendChild(popup);
+    
+    // Add event listeners
+    popup.querySelector('#accept-overlay-btn').onclick = () => acceptOverlaySuggestion(overlayElement, suggestionId, popup);
+    popup.querySelector('#reject-overlay-btn').onclick = () => rejectOverlaySuggestion(overlayElement, suggestionId, popup);
+    
+    // Close popup when clicking outside
+    const closePopup = (event) => {
+        if (!popup.contains(event.target) && !overlayElement.contains(event.target)) {
+            popup.remove();
+            document.removeEventListener('click', closePopup);
+        }
+    };
+    
+    setTimeout(() => {
+        document.addEventListener('click', closePopup);
+    }, 100);
+}
+
+// Accept overlay PII suggestion
+function acceptOverlaySuggestion(overlayElement, suggestionId, popup) {
+    const piiValue = overlayElement.getAttribute('data-pii-value');
+    const piiType = overlayElement.getAttribute('data-pii-type');
+    
+    // Store decision
+    suggestionStates.set(suggestionId, 'accepted');
     
     // Change overlay to show it's redacted
-    overlay.style.backgroundColor = 'rgba(244, 67, 54, 0.7)'; // Red
-    overlay.style.border = '2px solid #D32F2F';
-    overlay.innerHTML = `<span style="color: white; font-weight: bold; font-size: 12px; padding: 2px;">[REDACTED ${piiType}]</span>`;
-    overlay.onclick = null; // Remove click handler
-    overlay.style.cursor = 'default';
+    const redactionLabel = getRedactionLabel(piiType);
+    overlayElement.style.backgroundColor = 'rgba(244, 67, 54, 0.9)'; // Red
+    overlayElement.style.border = '2px solid #D32F2F';
+    overlayElement.innerHTML = `<span style="color: white; font-weight: bold; font-size: 12px; padding: 2px; display: flex; align-items: center; justify-content: center; height: 100%;">${redactionLabel}</span>`;
+    overlayElement.onclick = null; // Remove click handler
+    overlayElement.style.cursor = 'default';
+    overlayElement.title = `Redacted ${piiType}: ${piiValue}`;
     
-    console.log(`Redacted overlay: ${piiType} - "${piiValue}"`);
-    alert(`Redacted ${piiType}: ${piiValue}`);
+    // Remove popup
+    popup.remove();
+    
+    console.log(`Accepted overlay suggestion: ${piiType} "${piiValue}" -> "${redactionLabel}"`);
+}
+
+// Reject overlay PII suggestion
+function rejectOverlaySuggestion(overlayElement, suggestionId, popup) {
+    const piiValue = overlayElement.getAttribute('data-pii-value');
+    const piiType = overlayElement.getAttribute('data-pii-type');
+    
+    // Store decision
+    suggestionStates.set(suggestionId, 'rejected');
+    
+    // Remove the overlay entirely
+    overlayElement.remove();
+    
+    // Remove popup
+    popup.remove();
+    
+    console.log(`Rejected overlay suggestion: ${piiType} "${piiValue}"`);
+}
+
+// Legacy redact function (keeping for backward compatibility)
+function showSuggestionPopup(highlightElement) {
+    // Remove any existing popups
+    document.querySelectorAll(`.${SUGGESTION_POPUP_CLASS}`).forEach(popup => popup.remove());
+    
+    const piiValue = highlightElement.getAttribute('data-pii-value');
+    const piiType = highlightElement.getAttribute('data-pii-type');
+    const suggestionId = highlightElement.getAttribute('data-suggestion-id');
+    
+    // Create popup container
+    const popup = document.createElement('div');
+    popup.className = SUGGESTION_POPUP_CLASS;
+    popup.style.cssText = `
+        position: fixed;
+        background: white;
+        border: 2px solid #2196F3;
+        border-radius: 8px;
+        padding: 16px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        z-index: 999999;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        font-size: 14px;
+        min-width: 300px;
+        max-width: 400px;
+    `;
+    
+    // Position popup near the highlighted element
+    const rect = highlightElement.getBoundingClientRect();
+    popup.style.left = Math.min(rect.left, window.innerWidth - 420) + 'px';
+    popup.style.top = (rect.bottom + 10) + 'px';
+    
+    // Create popup content
+    popup.innerHTML = `
+        <div style="margin-bottom: 12px;">
+            <strong style="color: #1976D2;">PII Detected</strong>
+        </div>
+        <div style="margin-bottom: 8px;">
+            <strong>Type:</strong> ${piiType}
+        </div>
+        <div style="margin-bottom: 8px;">
+            <strong>Value:</strong> "<span style="background: #FFD54F; padding: 2px 4px; border-radius: 3px;">${piiValue}</span>"
+        </div>
+        <div style="margin-bottom: 16px;">
+            <strong>Will become:</strong> "<span style="background: #F44336; color: white; padding: 2px 4px; border-radius: 3px;">${getRedactionLabel(piiType)}</span>"
+        </div>
+        <div style="display: flex; gap: 8px; justify-content: flex-end;">
+            <button id="reject-btn" style="
+                background: #F44336; 
+                color: white; 
+                border: none; 
+                padding: 8px 16px; 
+                border-radius: 4px; 
+                cursor: pointer;
+                font-size: 13px;
+            ">✕ Reject</button>
+            <button id="accept-btn" style="
+                background: #4CAF50; 
+                color: white; 
+                border: none; 
+                padding: 8px 16px; 
+                border-radius: 4px; 
+                cursor: pointer;
+                font-size: 13px;
+            ">✓ Accept</button>
+        </div>
+    `;
+    
+    document.body.appendChild(popup);
+    
+    // Add event listeners
+    popup.querySelector('#accept-btn').onclick = () => acceptSuggestion(highlightElement, suggestionId, popup);
+    popup.querySelector('#reject-btn').onclick = () => rejectSuggestion(highlightElement, suggestionId, popup);
+    
+    // Close popup when clicking outside
+    const closePopup = (event) => {
+        if (!popup.contains(event.target) && !highlightElement.contains(event.target)) {
+            popup.remove();
+            document.removeEventListener('click', closePopup);
+        }
+    };
+    
+    // Add slight delay to prevent immediate closure
+    setTimeout(() => {
+        document.addEventListener('click', closePopup);
+    }, 100);
+}
+
+// Accept PII suggestion and redact
+function acceptSuggestion(highlightElement, suggestionId, popup) {
+    const piiValue = highlightElement.getAttribute('data-pii-value');
+    const piiType = highlightElement.getAttribute('data-pii-type');
+    
+    // Store decision
+    suggestionStates.set(suggestionId, 'accepted');
+    
+    // Replace with redaction label
+    const redactionLabel = getRedactionLabel(piiType);
+    const redactedSpan = document.createElement('span');
+    redactedSpan.textContent = redactionLabel;
+    redactedSpan.style.cssText = `
+        background-color: #F44336;
+        color: white;
+        padding: 2px 6px;
+        border-radius: 3px;
+        font-weight: bold;
+        font-size: 12px;
+    `;
+    redactedSpan.setAttribute('data-original-value', piiValue);
+    redactedSpan.setAttribute('data-pii-type', piiType);
+    redactedSpan.classList.add('pii-redacted');
+    
+    // Replace the highlight with redacted version
+    highlightElement.parentNode.replaceChild(redactedSpan, highlightElement);
+    
+    // Remove popup
+    popup.remove();
+    
+    console.log(`Accepted suggestion: ${piiType} "${piiValue}" -> "${redactionLabel}"`);
+}
+
+// Reject PII suggestion and keep original
+function rejectSuggestion(highlightElement, suggestionId, popup) {
+    const piiValue = highlightElement.getAttribute('data-pii-value');
+    const piiType = highlightElement.getAttribute('data-pii-type');
+    
+    // Store decision
+    suggestionStates.set(suggestionId, 'rejected');
+    
+    // Remove highlighting but keep original text
+    const textNode = document.createTextNode(highlightElement.textContent);
+    highlightElement.parentNode.replaceChild(textNode, highlightElement);
+    
+    // Remove popup
+    popup.remove();
+    
+    console.log(`Rejected suggestion: ${piiType} "${piiValue}"`);
 }
 
 // Redact function

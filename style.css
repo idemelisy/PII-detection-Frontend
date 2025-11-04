@@ -83,6 +83,76 @@
   box-shadow: 0 2px 4px rgba(103, 232, 249, 0.3);
 }
 
+/* Model selection container and dropdown */
+#pii-model-container {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(4, 139, 168, 0.2);
+}
+
+#pii-model-select {
+  width: 100%;
+  padding: 8px 12px;
+  border: 2px solid #048BA8;
+  border-radius: 6px;
+  background-color: #F0FCFF;
+  color: #048BA8;
+  font-family: 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', 'Segoe UI Symbol', 'Google Sans', Roboto, Arial, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  box-shadow: 0 2px 4px rgba(4, 139, 168, 0.1);
+}
+
+#pii-model-select:hover {
+  border-color: #22D3EE;
+  box-shadow: 0 3px 6px rgba(4, 139, 168, 0.2);
+  transform: translateY(-1px);
+}
+
+#pii-model-select:focus {
+  outline: none;
+  border-color: #67E8F9;
+  box-shadow: 0 0 0 3px rgba(103, 232, 249, 0.3);
+}
+
+#pii-model-select option {
+  padding: 8px;
+  background-color: #F0FCFF;
+  color: #048BA8;
+  font-weight: 600;
+}
+
+#pii-model-select option:hover,
+#pii-model-select option:checked {
+  background-color: #67E8F9;
+  color: black;
+}
+
+/* Notification animations */
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-20px);
+  }
+}
+
 /* Enhanced container with new color palette */
 #pii-scan-container {
   position: fixed;

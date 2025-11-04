@@ -11,40 +11,112 @@ const REJECTED_CLASS = 'pii-rejected';
 // Track suggestion states
 const suggestionStates = new Map(); // Store accept/reject decisions
 
-// Mock PII data matching the user's document text for testing highlighting
-const MOCK_PII_DATA = {
-  "has_pii": true,
-  "detected_entities": [
-    // Based on the actual ChatGPT text:
-    // "I am İde, living in Tuzla with my friend Neris Yılmaz. I will present this to my professors Dr. Emre Gürsoy and Dr. Saygın..."
-    
-    // Names (PERSON) - exact matches from ChatGPT
-    { "type": "PERSON", "start": 5, "end": 8, "value": "İde" },
-    { "type": "PERSON", "start": 42, "end": 54, "value": "Neris Yılmaz" },
-    { "type": "PERSON", "start": 94, "end": 109, "value": "Dr. Emre Gürsoy" },
-    { "type": "PERSON", "start": 114, "end": 124, "value": "Dr. Saygın" },
-    
-    // Locations (LOCATION) 
-    { "type": "LOCATION", "start": 20, "end": 25, "value": "Tuzla" },
-    { "type": "LOCATION", "start": 139, "end": 147, "value": "İstanbul" },
-    { "type": "LOCATION", "start": 150, "end": 157, "value": "Türkiye" },
-    { "type": "LOCATION", "start": 206, "end": 214, "value": "Orta Mah" },
-    { "type": "LOCATION", "start": 216, "end": 230, "value": "Üniversite Cad" },
-    { "type": "LOCATION", "start": 237, "end": 254, "value": "Sabancı Üniversitesi" },
-    
-    // Phone number (PHONE)
-    { "type": "PHONE", "start": 180, "end": 193, "value": "545 333 66 78" },
-    
-    // Emails (EMAIL) - exact from ChatGPT
-    { "type": "EMAIL", "start": 290, "end": 319, "value": "yücel.saygin@sabanciuniv.edu" },
-    { "type": "EMAIL", "start": 321, "end": 342, "value": "emregursoy@gmail.com" },
-    
-    // Alternative spellings that might appear
-    { "type": "PERSON", "start": 5, "end": 8, "value": "Ide" }, // without dot
-    { "type": "LOCATION", "start": 139, "end": 147, "value": "Istanbul" }, // without dot
-  ],
-  "total_entities": 15
+// Current selected model for PII detection
+let currentModel = 'piranha'; // Default model
+
+// Model configurations with different mock data sets
+const MODEL_CONFIGS = {
+    piranha: {
+        name: " Piranha",
+        description: "Fast and aggressive PII detection",
+        accuracy: "High"
+    },
+    presidio: {
+        name: " Presidio", 
+        description: "Microsoft's PII detection engine",
+        accuracy: "Very High"
+    },
+    ai4privacy: {
+        name: " AI4Privacy",
+        description: "Privacy-focused detection model",
+        accuracy: "High"
+    },
+    bdmbz: {
+        name: " BDMBZ",
+        description: "Lightning-fast detection",
+        accuracy: "Medium"
+    },
+    nemo: {
+        name: " NEMO",
+        description: "Precision-targeted detection",
+        accuracy: "Very High"
+    }
 };
+
+// Mock PII data matching the user's document text for testing highlighting
+// Different models detect different amounts and types of PII
+function getMockPIIData(model = 'piranha') {
+    const baseEntities = [
+        // Names (PERSON) - detected by all models
+        { "type": "PERSON", "start": 5, "end": 8, "value": "İde" },
+        { "type": "PERSON", "start": 42, "end": 54, "value": "Neris Yılmaz" },
+        { "type": "PERSON", "start": 94, "end": 109, "value": "Dr. Emre Gürsoy" },
+        { "type": "PERSON", "start": 114, "end": 124, "value": "Dr. Saygın" },
+        
+        // Phone number (PHONE) - detected by most models
+        { "type": "PHONE", "start": 180, "end": 193, "value": "545 333 66 78" },
+        
+        // Emails (EMAIL) - detected by all models
+        { "type": "EMAIL", "start": 286, "end": 313, "value": "ide.melisa.yigit@sabanciuniv.edu" },
+        { "type": "EMAIL", "start": 316, "end": 337, "value": "neris.ylmz@gmail.com" }
+    ];
+
+    const locationEntities = [
+        // Locations (LOCATION) - detected by some models
+        { "type": "LOCATION", "start": 20, "end": 25, "value": "Tuzla" },
+        { "type": "LOCATION", "start": 139, "end": 147, "value": "İstanbul" },
+        { "type": "LOCATION", "start": 150, "end": 157, "value": "Türkiye" },
+        { "type": "LOCATION", "start": 206, "end": 214, "value": "Orta Mah" },
+        { "type": "LOCATION", "start": 216, "end": 230, "value": "Üniversite Cad" },
+        { "type": "LOCATION", "start": 237, "end": 254, "value": "Sabancı Üniversitesi" }
+    ];
+
+    const sensitiveEntities = [
+        // Additional sensitive data detected by advanced models
+        { "type": "ID", "start": 400, "end": 411, "value": "12345678901" }, // Turkish ID simulation
+        { "type": "ORGANIZATION", "start": 237, "end": 254, "value": "Sabancı Üniversitesi" }
+    ];
+
+    let detectedEntities = [...baseEntities];
+    
+    switch(model) {
+        case 'piranha':
+            // Aggressive detection - finds almost everything
+            detectedEntities = [...baseEntities, ...locationEntities, ...sensitiveEntities];
+            break;
+            
+        case 'presidio':
+            // Very high accuracy - finds names, emails, phones, and some locations
+            detectedEntities = [...baseEntities, ...locationEntities.slice(0, 3)];
+            break;
+            
+        case 'ai4privacy':
+            // Privacy-focused - conservative but thorough
+            detectedEntities = [...baseEntities, ...sensitiveEntities];
+            break;
+            
+        case 'bdmbz':
+            // Fast but basic - only obvious PII
+            detectedEntities = baseEntities.slice(0, 6); // Names, phone, emails only
+            break;
+            
+        case 'nemo':
+            // Precision-targeted - high confidence only
+            detectedEntities = [...baseEntities, ...locationEntities.slice(0, 2), sensitiveEntities[1]];
+            break;
+            
+        default:
+            detectedEntities = baseEntities;
+    }
+
+    return {
+        "has_pii": detectedEntities.length > 0,
+        "detected_entities": detectedEntities,
+        "total_entities": detectedEntities.length,
+        "model_used": model,
+        "confidence_threshold": model === 'bdmbz' ? 0.9 : model === 'piranha' ? 0.6 : 0.8
+    };
+}
 
 // Inject the Scan button into the Google Docs interface
 function injectScanButton() {
@@ -72,9 +144,37 @@ function injectScanButton() {
     acceptAllButton.innerHTML = `<span role="img" aria-label="Accept All">✅</span> Accept All`;
     acceptAllButton.onclick = acceptAllPII;
     
+    // Model Selection Dropdown
+    const modelSelectContainer = document.createElement("div");
+    modelSelectContainer.id = "pii-model-container";
+    
+    const modelLabel = document.createElement("label");
+    modelLabel.htmlFor = "pii-model-select";
+    modelLabel.textContent = "Model:";
+    modelLabel.style.fontSize = "12px";
+    modelLabel.style.color = "#048BA8";
+    modelLabel.style.fontWeight = "600";
+    modelLabel.style.marginBottom = "4px";
+    modelLabel.style.display = "block";
+    
+    const modelSelect = document.createElement("select");
+    modelSelect.id = "pii-model-select";
+    modelSelect.innerHTML = `
+        <option value="piranha" selected>🐟 Piranha (Current)</option>
+        <option value="presidio">🛡️ Presidio</option>
+        <option value="ai4privacy">🔒 AI4Privacy</option>
+        <option value="bdmbz">⚡ BDMBZ</option>
+        <option value="nemo">🎯 NEMO</option>
+    `;
+    modelSelect.onchange = handleModelChange;
+    
+    modelSelectContainer.appendChild(modelLabel);
+    modelSelectContainer.appendChild(modelSelect);
+    
     container.appendChild(scanButton);
     container.appendChild(clearButton);
     container.appendChild(acceptAllButton);
+    container.appendChild(modelSelectContainer);
     
     // Append the container directly to the body (CSS handles positioning to top-right)
     document.body.appendChild(container);
@@ -370,6 +470,76 @@ function acceptAllPII() {
     console.log(`Accept All completed. ${acceptedCount} PII elements processed.`);
 }
 
+// Handle model selection change
+function handleModelChange(event) {
+    const selectedModel = event.target.value;
+    const previousModel = currentModel;
+    currentModel = selectedModel;
+    
+    console.log(`Model changed from ${previousModel} to ${selectedModel}`);
+    
+    // Update the dropdown text to show current model
+    const modelSelect = document.getElementById('pii-model-select');
+    if (modelSelect) {
+        // Update the selected option text to show "(Current)"
+        Array.from(modelSelect.options).forEach(option => {
+            const modelKey = option.value;
+            const config = MODEL_CONFIGS[modelKey];
+            if (modelKey === selectedModel) {
+                option.textContent = `${config.name} (Current)`;
+            } else {
+                option.textContent = config.name;
+            }
+        });
+    }
+    
+    // Show model info notification
+    const modelConfig = MODEL_CONFIGS[selectedModel];
+    const notification = document.createElement('div');
+    notification.style.cssText = `
+        position: fixed;
+        top: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: linear-gradient(135deg, #F0FCFF 0%, rgba(255, 255, 255, 0.95) 100%);
+        border: 2px solid #048BA8;
+        border-radius: 8px;
+        padding: 12px 20px;
+        box-shadow: 0 4px 12px rgba(4, 139, 168, 0.3);
+        z-index: 1000000;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        font-size: 14px;
+        color: #048BA8;
+        backdrop-filter: blur(10px);
+        animation: slideDown 0.3s ease-out;
+    `;
+    
+    notification.innerHTML = `
+        <div style="font-weight: bold; margin-bottom: 4px;">
+            ${modelConfig.name} Selected
+        </div>
+        <div style="font-size: 12px; opacity: 0.8;">
+            ${modelConfig.description} • Accuracy: ${modelConfig.accuracy}
+        </div>
+    `;
+    
+    document.body.appendChild(notification);
+    
+    // Remove notification after 3 seconds
+    setTimeout(() => {
+        if (notification.parentNode) {
+            notification.style.animation = 'slideUp 0.3s ease-in';
+            setTimeout(() => notification.remove(), 300);
+        }
+    }, 3000);
+    
+    // Clear existing highlights since we're switching models
+    clearHighlights(false);
+    
+    // Optionally auto-rescan with new model (commented out for now)
+    // setTimeout(() => handleScanClick(), 500);
+}
+
 
 // Handles the Scan button click event
 async function handleScanClick() {
@@ -384,15 +554,15 @@ async function handleScanClick() {
     return;
   }
   
-  // 1. Use MOCK Data
-  const piiResults = MOCK_PII_DATA;
+  // 1. Use MOCK Data based on current model
+  const piiResults = getMockPIIData(currentModel);
   
   // 2. Process results and highlight
   if (piiResults && piiResults.detected_entities && piiResults.detected_entities.length > 0) {
-      alert(`Scan complete! ${piiResults.total_entities} PII suggestions found. Click highlighted text to review and accept/reject each suggestion.`);
+      alert(`Scan complete with ${MODEL_CONFIGS[currentModel].name}! ${piiResults.total_entities} PII suggestions found. Click highlighted text to review and accept/reject each suggestion.`);
       highlightPiiInDocument(piiResults.detected_entities);
   } else {
-      alert("Scan complete, no PII found.");
+      alert(`Scan complete with ${MODEL_CONFIGS[currentModel].name}, no PII found.`);
   }
 }
 

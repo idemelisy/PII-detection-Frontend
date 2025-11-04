@@ -1,0 +1,88 @@
+/* Tüm butonlar için ortak stil */
+#pii-scan-button, #pii-clear-button {
+  background-color: #00ff40; /* Turuncu (Google'ın Materyal Tasarımından) */
+  color: white;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 500;
+  /* Include emoji-capable fonts early in the stack so emoji glyphs render reliably */
+  font-family: 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', 'Segoe UI Symbol', 'Google Sans', Roboto, Arial, sans-serif;
+  font-size: 14px;
+  transition: background-color 0.2s;
+  margin-left: 5px;
+}
+
+#pii-scan-button:hover, #pii-clear-button:hover {
+  background-color: #00f552; /* Koyu turuncu */
+  box-shadow: 0 1px 2px 0 rgba(0,0,0,0.3), 0 1px 3px 1px rgba(0,0,0,0.15);
+}
+
+/* Konteynerı sağ üste sabitleme */
+#pii-scan-container {
+  position: fixed;
+  top: 10px; /* Üstten boşluk */
+  right: 10px; /* Sağdan boşluk */
+  z-index: 10000; /* Her şeyin üstünde görünmesini sağla */
+  display: flex;
+  align-items: center;
+  background-color: white;
+  padding: 5px 10px;
+  border-radius: 8px;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+}
+
+/* PII Vurgulama Stili */
+.pii-highlight {
+  background-color: #FFD54F !important; /* canlı sarı vurgu */
+  cursor: pointer;
+  padding: 1px 0;
+  border-radius: 2px;
+  transition: background-color 0.1s;
+  display: inline-block; /* inline olarak kalıp butonu içinde taşıyabilmek için */
+  position: relative;    /* içindeki buton absolute pozisyonlanacak */
+  overflow: visible; /* allow inline button to be visible (Docs can clip children) */
+}
+
+.pii-highlight:hover {
+  background-color: #FFA000 !important;
+}
+
+/* Küçük kalkan butonu (inline) */
+.pii-inline-btn {
+  /* Make the redact button inline so it isn't clipped by parent containers
+     (Google Docs often uses overflow:hidden on parent containers which clips absolutely-positioned children).
+     If you prefer a floating button, additional container adjustments are needed.
+  */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: static;
+  margin-left: 6px; /* small gap after the highlighted word */
+  border: none;
+  background: #1976d2; /* mavi küçük buton */
+  color: #fff;
+  padding: 3px 6px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.25);
+  z-index: 9999999;
+}
+
+/* Hover edildiğinde butonu göster */
+.pii-highlight:hover > .pii-inline-btn {
+  display: inline-block;
+}
+
+/* Buton çok yakınsa taşmalar için uyarı (küçültme) */
+.pii-inline-btn.small {
+  padding: 2px 4px;
+  font-size: 11px;
+  right: -28px;
+}
+
+/* Redact butonunun metin üzerine yerleştirilmesi (Gelişmiş UX için) */
+/* Şu anlık sadece tıklanabilir vurgu ekledik. */

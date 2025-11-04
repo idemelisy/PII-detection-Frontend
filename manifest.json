@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "PII Detector (Chrome Uzantısı)",
+  "version": "1.0",
+  "description": "Google Docs üzerinde PII tespiti yapar ve vurgular.",
+  
+  "permissions": [
+    "storage" 
+  ],
+
+  "host_permissions": [
+    "https://*.trycloudflare.com/*",
+    "https://*.loca.lt/*"
+  ],
+
+  "content_scripts": [
+    {
+      "matches": [
+        "https://docs.google.com/document/d/*",
+        "https://chat.openai.com/*",
+        "https://chatgpt.com/*",
+        "https://mail.google.com/*",
+        "https://*/*",
+        "http://*/*"
+      ],
+      "css": ["style.css"],
+      "js": ["content.js"]
+    }
+  ]
+}

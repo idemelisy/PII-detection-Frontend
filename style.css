@@ -1,75 +1,123 @@
-/* Tüm butonlar için ortak stil */
-#pii-scan-button, #pii-clear-button {
-  background-color: #00ff40; /* Turuncu (Google'ın Materyal Tasarımından) */
+/* Scan button with new color palette */
+#pii-scan-button {
+  background-color: #048BA8;
   color: white;
-  padding: 8px 12px;
+  padding: 10px 16px;
   border: none;
-  border-radius: 4px;
+  border-radius: 8px;
   cursor: pointer;
-  font-weight: 500;
-  /* Include emoji-capable fonts early in the stack so emoji glyphs render reliably */
+  font-weight: 600;
   font-family: 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', 'Segoe UI Symbol', 'Google Sans', Roboto, Arial, sans-serif;
   font-size: 14px;
-  transition: background-color 0.2s;
+  transition: all 0.3s ease;
   margin-left: 5px;
+  box-shadow: 0 2px 4px rgba(4, 139, 168, 0.3);
+  text-shadow: 0 1px 2px rgba(0,0,0,0.1);
 }
 
-#pii-scan-button:hover, #pii-clear-button:hover {
-  background-color: #00f552; /* Koyu turuncu */
-  box-shadow: 0 1px 2px 0 rgba(0,0,0,0.3), 0 1px 3px 1px rgba(0,0,0,0.15);
+#pii-scan-button:hover {
+  background-color: #037a94;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(4, 139, 168, 0.4);
 }
 
-/* Konteynerı sağ üste sabitleme */
+#pii-scan-button:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 4px rgba(4, 139, 168, 0.3);
+}
+
+/* Clear button with new color palette */
+#pii-clear-button {
+  background-color: #22D3EE;
+  color: black;
+  padding: 10px 16px;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 600;
+  font-family: 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', 'Segoe UI Symbol', 'Google Sans', Roboto, Arial, sans-serif;
+  font-size: 14px;
+  transition: all 0.3s ease;
+  margin-left: 8px;
+  box-shadow: 0 2px 4px rgba(34, 211, 238, 0.3);
+  text-shadow: 0 1px 2px rgba(0,0,0,0.1);
+}
+
+#pii-clear-button:hover {
+  background-color: #0891b2;
+  color: white;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(34, 211, 238, 0.4);
+}
+
+#pii-clear-button:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 4px rgba(34, 211, 238, 0.3);
+}
+
+/* Enhanced container with new color palette */
 #pii-scan-container {
   position: fixed;
-  top: 10px; /* Üstten boşluk */
-  right: 10px; /* Sağdan boşluk */
-  z-index: 10000; /* Her şeyin üstünde görünmesini sağla */
+  top: 15px;
+  right: 15px;
+  z-index: 10000;
   display: flex;
   align-items: center;
-  background-color: white;
-  padding: 5px 10px;
-  border-radius: 8px;
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+  background: linear-gradient(135deg, rgba(240, 252, 255, 0.95) 0%, rgba(255, 255, 255, 0.95) 100%);
+  backdrop-filter: blur(10px);
+  padding: 8px 12px;
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(4, 139, 168, 0.15), 0 4px 8px rgba(0, 0, 0, 0.1);
+  border: 1px solid rgba(103, 232, 249, 0.5);
 }
 
-/* PII Vurgulama Stili */
+/* PII Highlighting with new color palette */
 .pii-highlight {
-  background-color: #FFD54F !important; /* canlı sarı vurgu */
+  background-color: #FBBF24 !important;
   cursor: pointer;
-  padding: 1px 0;
-  border-radius: 2px;
-  transition: background-color 0.1s;
-  display: inline-block; /* inline olarak kalıp butonu içinde taşıyabilmek için */
-  position: relative;    /* içindeki buton absolute pozisyonlanacak */
-  overflow: visible; /* allow inline button to be visible (Docs can clip children) */
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+  display: inline-block;
+  position: relative;
+  overflow: visible;
+  border: 1px solid #F59E0B;
+  box-shadow: 0 1px 3px rgba(251, 191, 36, 0.3);
 }
 
 .pii-highlight:hover {
-  background-color: #FFA000 !important;
+  background-color: #F59E0B !important;
+  color: black;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(245, 158, 11, 0.4);
+  border-color: #048BA8;
 }
 
-/* Küçük kalkan butonu (inline) */
+/* Enhanced inline button with new color palette */
 .pii-inline-btn {
-  /* Make the redact button inline so it isn't clipped by parent containers
-     (Google Docs often uses overflow:hidden on parent containers which clips absolutely-positioned children).
-     If you prefer a floating button, additional container adjustments are needed.
-  */
   display: inline-flex;
   align-items: center;
   justify-content: center;
   position: static;
-  margin-left: 6px; /* small gap after the highlighted word */
+  margin-left: 6px;
   border: none;
-  background: #1976d2; /* mavi küçük buton */
-  color: #fff;
-  padding: 3px 6px;
+  background-color: #67E8F9;
+  color: black;
+  padding: 4px 8px;
   border-radius: 6px;
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1;
   cursor: pointer;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.25);
+  box-shadow: 0 2px 4px rgba(103, 232, 249, 0.3);
   z-index: 9999999;
+  transition: all 0.2s ease;
+  font-weight: 600;
+}
+
+.pii-inline-btn:hover {
+  background-color: #22D3EE;
+  transform: translateY(-1px);
+  box-shadow: 0 3px 6px rgba(34, 211, 238, 0.4);
 }
 
 /* Hover edildiğinde butonu göster */
@@ -86,3 +134,77 @@
 
 /* Redact butonunun metin üzerine yerleştirilmesi (Gelişmiş UX için) */
 /* Şu anlık sadece tıklanabilir vurgu ekledik. */
+
+/* PII Suggestion Popup Styling with new color palette */
+.pii-suggestion-popup {
+  position: fixed;
+  background: linear-gradient(135deg, #F0FCFF 0%, rgba(255, 255, 255, 0.95) 100%);
+  border: 2px solid #048BA8;
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: 0 8px 24px rgba(4, 139, 168, 0.2), 0 4px 8px rgba(0, 0, 0, 0.1);
+  z-index: 999999;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
+  min-width: 320px;
+  max-width: 420px;
+  backdrop-filter: blur(10px);
+}
+
+.pii-suggestion-popup strong {
+  color: #048BA8;
+}
+
+.pii-suggestion-popup .pii-value-highlight {
+  background: #FBBF24;
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid #F59E0B;
+}
+
+.pii-suggestion-popup .pii-redaction-preview {
+  background: #22D3EE;
+  color: black;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-weight: bold;
+}
+
+.pii-suggestion-popup button {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-weight: 600;
+  border: none;
+  padding: 10px 18px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.2s ease;
+}
+
+.pii-suggestion-popup button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.2);
+}
+
+.pii-suggestion-popup #reject-btn,
+.pii-suggestion-popup #reject-overlay-btn {
+  background-color: #22D3EE;
+  color: black;
+}
+
+.pii-suggestion-popup #reject-btn:hover,
+.pii-suggestion-popup #reject-overlay-btn:hover {
+  background-color: #0891b2;
+  color: white;
+}
+
+.pii-suggestion-popup #accept-btn,
+.pii-suggestion-popup #accept-overlay-btn {
+  background-color: #048BA8;
+  color: white;
+}
+
+.pii-suggestion-popup #accept-btn:hover,
+.pii-suggestion-popup #accept-overlay-btn:hover {
+  background-color: #037a94;
+}

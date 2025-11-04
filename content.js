@@ -475,7 +475,7 @@ function highlightTextInNode(textNode, startIndex, length, entity) {
         highlightSpan.setAttribute('data-pii-type', entity.type);
         highlightSpan.setAttribute('data-pii-value', entity.value);
         highlightSpan.textContent = highlightedText;
-        highlightSpan.style.backgroundColor = '#ffeb3b';
+        highlightSpan.style.backgroundColor = '#FBBF24';
         highlightSpan.style.color = '#000';
         highlightSpan.style.cursor = 'pointer';
         highlightSpan.style.padding = '2px';
@@ -622,8 +622,8 @@ function createOverlayHighlight(rect, entity) {
     overlay.style.top = rect.top + 'px';
     overlay.style.width = rect.width + 'px';
     overlay.style.height = rect.height + 'px';
-    overlay.style.backgroundColor = 'rgba(255, 235, 59, 0.7)'; // Yellow with transparency
-    overlay.style.border = '2px solid #FFA000';
+    overlay.style.backgroundColor = 'rgba(251, 191, 36, 0.7)'; // New palette yellow with transparency
+    overlay.style.border = '2px solid #F59E0B';
     overlay.style.borderRadius = '3px';
     overlay.style.pointerEvents = 'auto';
     overlay.style.cursor = 'pointer';
@@ -654,58 +654,29 @@ function showOverlaySuggestionPopup(overlayElement) {
     // Create popup similar to regular suggestion popup
     const popup = document.createElement('div');
     popup.className = SUGGESTION_POPUP_CLASS;
-    popup.style.cssText = `
-        position: fixed;
-        background: white;
-        border: 2px solid #2196F3;
-        border-radius: 8px;
-        padding: 16px;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-        z-index: 999999;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        font-size: 14px;
-        min-width: 300px;
-        max-width: 400px;
-    `;
     
     // Position popup near the overlay
     const rect = overlayElement.getBoundingClientRect();
-    popup.style.left = Math.min(rect.left, window.innerWidth - 420) + 'px';
+    popup.style.left = Math.min(rect.left, window.innerWidth - 440) + 'px';
     popup.style.top = (rect.bottom + 10) + 'px';
     
     // Create popup content
     popup.innerHTML = `
         <div style="margin-bottom: 12px;">
-            <strong style="color: #1976D2;">PII Detected (Overlay Mode)</strong>
+            <strong>PII Detected (Overlay Mode)</strong>
         </div>
         <div style="margin-bottom: 8px;">
             <strong>Type:</strong> ${piiType}
         </div>
         <div style="margin-bottom: 8px;">
-            <strong>Value:</strong> "<span style="background: #FFD54F; padding: 2px 4px; border-radius: 3px;">${piiValue}</span>"
+            <strong>Value:</strong> "<span class="pii-value-highlight">${piiValue}</span>"
         </div>
         <div style="margin-bottom: 16px;">
-            <strong>Will become:</strong> "<span style="background: #F44336; color: white; padding: 2px 4px; border-radius: 3px;">${getRedactionLabel(piiType)}</span>"
+            <strong>Will become:</strong> "<span class="pii-redaction-preview">${getRedactionLabel(piiType)}</span>"
         </div>
-        <div style="display: flex; gap: 8px; justify-content: flex-end;">
-            <button id="reject-overlay-btn" style="
-                background: #F44336; 
-                color: white; 
-                border: none; 
-                padding: 8px 16px; 
-                border-radius: 4px; 
-                cursor: pointer;
-                font-size: 13px;
-            ">✕ Reject</button>
-            <button id="accept-overlay-btn" style="
-                background: #4CAF50; 
-                color: white; 
-                border: none; 
-                padding: 8px 16px; 
-                border-radius: 4px; 
-                cursor: pointer;
-                font-size: 13px;
-            ">✓ Accept</button>
+        <div style="display: flex; gap: 10px; justify-content: flex-end;">
+            <button id="reject-overlay-btn">✕ Reject</button>
+            <button id="accept-overlay-btn">✓ Accept</button>
         </div>
     `;
     
@@ -738,9 +709,9 @@ function acceptOverlaySuggestion(overlayElement, suggestionId, popup) {
     
     // Change overlay to show it's redacted
     const redactionLabel = getRedactionLabel(piiType);
-    overlayElement.style.backgroundColor = 'rgba(244, 67, 54, 0.9)'; // Red
-    overlayElement.style.border = '2px solid #D32F2F';
-    overlayElement.innerHTML = `<span style="color: white; font-weight: bold; font-size: 12px; padding: 2px; display: flex; align-items: center; justify-content: center; height: 100%;">${redactionLabel}</span>`;
+    overlayElement.style.backgroundColor = 'rgba(34, 211, 238, 0.9)'; // New palette cyan
+    overlayElement.style.border = '2px solid #22D3EE';
+    overlayElement.innerHTML = `<span style="color: black; font-weight: bold; font-size: 12px; padding: 2px; display: flex; align-items: center; justify-content: center; height: 100%;">${redactionLabel}</span>`;
     overlayElement.onclick = null; // Remove click handler
     overlayElement.style.cursor = 'default';
     overlayElement.title = `Redacted ${piiType}: ${piiValue}`;
@@ -780,58 +751,29 @@ function showSuggestionPopup(highlightElement) {
     // Create popup container
     const popup = document.createElement('div');
     popup.className = SUGGESTION_POPUP_CLASS;
-    popup.style.cssText = `
-        position: fixed;
-        background: white;
-        border: 2px solid #2196F3;
-        border-radius: 8px;
-        padding: 16px;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-        z-index: 999999;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        font-size: 14px;
-        min-width: 300px;
-        max-width: 400px;
-    `;
     
     // Position popup near the highlighted element
     const rect = highlightElement.getBoundingClientRect();
-    popup.style.left = Math.min(rect.left, window.innerWidth - 420) + 'px';
+    popup.style.left = Math.min(rect.left, window.innerWidth - 440) + 'px';
     popup.style.top = (rect.bottom + 10) + 'px';
     
     // Create popup content
     popup.innerHTML = `
         <div style="margin-bottom: 12px;">
-            <strong style="color: #1976D2;">PII Detected</strong>
+            <strong>PII Detected</strong>
         </div>
         <div style="margin-bottom: 8px;">
             <strong>Type:</strong> ${piiType}
         </div>
         <div style="margin-bottom: 8px;">
-            <strong>Value:</strong> "<span style="background: #FFD54F; padding: 2px 4px; border-radius: 3px;">${piiValue}</span>"
+            <strong>Value:</strong> "<span class="pii-value-highlight">${piiValue}</span>"
         </div>
         <div style="margin-bottom: 16px;">
-            <strong>Will become:</strong> "<span style="background: #F44336; color: white; padding: 2px 4px; border-radius: 3px;">${getRedactionLabel(piiType)}</span>"
+            <strong>Will become:</strong> "<span class="pii-redaction-preview">${getRedactionLabel(piiType)}</span>"
         </div>
-        <div style="display: flex; gap: 8px; justify-content: flex-end;">
-            <button id="reject-btn" style="
-                background: #F44336; 
-                color: white; 
-                border: none; 
-                padding: 8px 16px; 
-                border-radius: 4px; 
-                cursor: pointer;
-                font-size: 13px;
-            ">✕ Reject</button>
-            <button id="accept-btn" style="
-                background: #4CAF50; 
-                color: white; 
-                border: none; 
-                padding: 8px 16px; 
-                border-radius: 4px; 
-                cursor: pointer;
-                font-size: 13px;
-            ">✓ Accept</button>
+        <div style="display: flex; gap: 10px; justify-content: flex-end;">
+            <button id="reject-btn">✕ Reject</button>
+            <button id="accept-btn">✓ Accept</button>
         </div>
     `;
     
@@ -868,8 +810,8 @@ function acceptSuggestion(highlightElement, suggestionId, popup) {
     const redactedSpan = document.createElement('span');
     redactedSpan.textContent = redactionLabel;
     redactedSpan.style.cssText = `
-        background-color: #F44336;
-        color: white;
+        background-color: #22D3EE;
+        color: black;
         padding: 2px 6px;
         border-radius: 3px;
         font-weight: bold;

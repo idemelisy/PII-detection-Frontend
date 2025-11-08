@@ -1,6 +1,18 @@
-// --- MOCK MODE: API Connection Disabled ---
-// This script uses fake data for PII detection and includes highlighting logic.
-console.log("PII Detector Content Script Loaded! (MOCK MODE)");
+// --- PII Detector with Backend API ---
+// This script connects to the Presidio backend for real PII detection.
+console.log("PII Detector Content Script Loaded! (Backend API Mode)");
+
+// Global error handler to prevent crashes
+window.addEventListener("error", (e) => {
+    console.error("[PII Extension] Global error caught:", e.message, e.error);
+    console.error("[PII Extension] Error stack:", e.error?.stack);
+});
+
+// Global unhandled promise rejection handler
+window.addEventListener("unhandledrejection", (e) => {
+    console.error("[PII Extension] Unhandled promise rejection:", e.reason);
+    e.preventDefault(); // Prevent the default browser behavior
+});
 
 // Highlighting class (must synchronize with style.css)
 const HIGHLIGHT_CLASS = 'pii-highlight'; 
@@ -12,7 +24,11 @@ const REJECTED_CLASS = 'pii-rejected';
 const suggestionStates = new Map(); // Store accept/reject decisions
 
 // Current selected model for PII detection
-let currentModel = 'piranha'; // Default model
+let currentModel = 'presidio'; // Default model (now using real Presidio backend)
+
+// Backend API configuration
+const BACKEND_API_URL = 'http://127.0.0.1:5000/detect-pii'; // Change this to your backend URL
+const BACKEND_HEALTH_URL = 'http://127.0.0.1:5000/health';
 
 // Model configurations with different mock data sets
 const MODEL_CONFIGS = {
@@ -43,78 +59,107 @@ const MODEL_CONFIGS = {
     }
 };
 
-// Mock PII data matching the user's document text for testing highlighting
-// Different models detect different amounts and types of PII
-function getMockPIIData(model = 'piranha') {
+// Check if backend is available using background script (avoids CORS issues)
+async function checkBackendHealth() {
+    try {
+        console.log("[PII Extension] Checking backend health via background script...");
+        
+        return new Promise((resolve) => {
+            const timeout = setTimeout(() => {
+                console.warn("[PII Extension] Health check timed out");
+                resolve(false);
+            }, 5000);
+            
+            chrome.runtime.sendMessage(
+                { action: 'checkHealth' },
+                (response) => {
+                    clearTimeout(timeout);
+                    if (chrome.runtime.lastError) {
+                        console.warn("[PII Extension] Background script error:", chrome.runtime.lastError.message);
+                        resolve(false);
+                        return;
+                    }
+                    
+                    if (response && response.success) {
+                        const data = response.data;
+                        console.log("[PII Extension] Health check response:", data);
+                        const isHealthy = data.status === 'healthy' && data.presidio_initialized === true;
+                        console.log("[PII Extension] Backend is healthy:", isHealthy);
+                        resolve(isHealthy);
+                    } else {
+                        console.warn("[PII Extension] Health check failed:", response?.error);
+                        resolve(false);
+                    }
+                }
+            );
+        });
+    } catch (error) {
+        console.warn("[PII Extension] Backend health check failed:", error.message || error);
+        return false;
+    }
+}
+
+// Call backend API to detect PII using background script (avoids CORS issues)
+async function detectPIIFromBackend(text, model = 'presidio') {
+    try {
+        console.log(`[PII Extension] Calling backend API for PII detection via background script (model: ${model})...`);
+        
+        return new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                reject(new Error("Request timed out. The text might be too long or the server is slow."));
+            }, 30000);
+            
+            chrome.runtime.sendMessage(
+                {
+                    action: 'detectPII',
+                    text: text,
+                    language: 'en',
+                    model: model
+                },
+                (response) => {
+                    clearTimeout(timeout);
+                    
+                    if (chrome.runtime.lastError) {
+                        console.error("[PII Extension] Background script error:", chrome.runtime.lastError.message);
+                        reject(new Error("Cannot connect to backend server. Please ensure the server is running."));
+                        return;
+                    }
+                    
+                    if (response && response.success) {
+                        const data = response.data;
+                        console.log(`[PII Extension] Backend detected ${data.total_entities} PII entities`);
+                        resolve(data);
+                    } else {
+                        const errorMsg = response?.error || "Unknown error";
+                        console.error("[PII Extension] Backend API error:", errorMsg);
+                        reject(new Error(errorMsg));
+                    }
+                }
+            );
+        });
+    } catch (error) {
+        console.error("[PII Extension] Error calling backend API:", error.message || error);
+        throw error;
+    }
+}
+
+// Fallback to mock data if backend is unavailable (for development/testing)
+function getMockPIIData(model = 'presidio') {
+    console.warn("[PII Extension] Using fallback mock data - backend unavailable");
     const baseEntities = [
-        // Names (PERSON) - detected by all models
         { "type": "PERSON", "start": 5, "end": 8, "value": "İde" },
         { "type": "PERSON", "start": 42, "end": 54, "value": "Neris Yılmaz" },
-        { "type": "PERSON", "start": 94, "end": 109, "value": "Dr. Emre Gürsoy" },
-        { "type": "PERSON", "start": 114, "end": 124, "value": "Dr. Saygın" },
-        
-        // Phone number (PHONE) - detected by most models
-        { "type": "PHONE", "start": 180, "end": 193, "value": "545 333 66 78" },
-        
-        // Emails (EMAIL) - detected by all models
-        { "type": "EMAIL", "start": 286, "end": 313, "value": "ide.melisa.yigit@sabanciuniv.edu" },
-        { "type": "EMAIL", "start": 316, "end": 337, "value": "neris.ylmz@gmail.com" }
+        { "type": "EMAIL", "start": 286, "end": 313, "value": "yücel.saygin@sabanciuniv.edu" },
+        { "type": "EMAIL", "start": 316, "end": 337, "value": "emregursoy@gmail.com" },
+        { "type": "PHONE", "start": 180, "end": 193, "value": "545 333 66 78" }
     ];
-
-    const locationEntities = [
-        // Locations (LOCATION) - detected by some models
-        { "type": "LOCATION", "start": 20, "end": 25, "value": "Tuzla" },
-        { "type": "LOCATION", "start": 139, "end": 147, "value": "İstanbul" },
-        { "type": "LOCATION", "start": 150, "end": 157, "value": "Türkiye" },
-        { "type": "LOCATION", "start": 206, "end": 214, "value": "Orta Mah" },
-        { "type": "LOCATION", "start": 216, "end": 230, "value": "Üniversite Cad" },
-        { "type": "LOCATION", "start": 237, "end": 254, "value": "Sabancı Üniversitesi" }
-    ];
-
-    const sensitiveEntities = [
-        // Additional sensitive data detected by advanced models
-        { "type": "ID", "start": 400, "end": 411, "value": "12345678901" }, // Turkish ID simulation
-        { "type": "ORGANIZATION", "start": 237, "end": 254, "value": "Sabancı Üniversitesi" }
-    ];
-
-    let detectedEntities = [...baseEntities];
-    
-    switch(model) {
-        case 'piranha':
-            // Aggressive detection - finds almost everything
-            detectedEntities = [...baseEntities, ...locationEntities, ...sensitiveEntities];
-            break;
-            
-        case 'presidio':
-            // Very high accuracy - finds names, emails, phones, and some locations
-            detectedEntities = [...baseEntities, ...locationEntities.slice(0, 3)];
-            break;
-            
-        case 'ai4privacy':
-            // Privacy-focused - conservative but thorough
-            detectedEntities = [...baseEntities, ...sensitiveEntities];
-            break;
-            
-        case 'bdmbz':
-            // Fast but basic - only obvious PII
-            detectedEntities = baseEntities.slice(0, 6); // Names, phone, emails only
-            break;
-            
-        case 'nemo':
-            // Precision-targeted - high confidence only
-            detectedEntities = [...baseEntities, ...locationEntities.slice(0, 2), sensitiveEntities[1]];
-            break;
-            
-        default:
-            detectedEntities = baseEntities;
-    }
 
     return {
-        "has_pii": detectedEntities.length > 0,
-        "detected_entities": detectedEntities,
-        "total_entities": detectedEntities.length,
+        "has_pii": baseEntities.length > 0,
+        "detected_entities": baseEntities,
+        "total_entities": baseEntities.length,
         "model_used": model,
-        "confidence_threshold": model === 'bdmbz' ? 0.9 : model === 'piranha' ? 0.6 : 0.8
+        "confidence_threshold": 0.8
     };
 }
 
@@ -189,6 +234,20 @@ function findContentArea() {
   const pageType = detectPageType();
   console.log(`Finding content area for page type: ${pageType}`);
   
+  // IMPORTANT: For ChatGPT, NEVER return elements we might modify
+  // Only use for scanning, never for DOM manipulation
+  if (pageType === 'chatgpt') {
+    console.log("[PII Extension] ChatGPT detected - using textarea-only approach");
+    const textarea = document.querySelector("textarea");
+    if (textarea) {
+      // Create a virtual container with the textarea content for scanning only
+      const virtualContainer = document.createElement('div');
+      virtualContainer.textContent = textarea.value;
+      return virtualContainer;
+    }
+    return null;
+  }
+  
   let contentSelectors = [];
   
   switch(pageType) {
@@ -201,25 +260,20 @@ function findContentArea() {
       ];
       break;
       
-    case 'chatgpt':
-      contentSelectors = [
-        '[data-message-author-role="user"]', // User messages
-        '[data-testid="conversation-turn-content"]', // Conversation content
-        '.markdown prose', // Message content with markdown
-        'article[data-testid^="conversation-turn"]', // Full conversation turns
-        '.text-message', // Text messages
-        'main [role="main"]', // Main content area
-        'main', // Main element as fallback
-        '.text-base' // Generic text (last resort)
-      ];
-      break;
-      
     case 'gmail':
-      contentSelectors = [
-        '.ii.gt .a3s',
-        '.ii.gt',
-        '[role="textbox"]',
-        '.Am.Al.editable'
+       contentSelectors = [
+        '.ii.gt .a3s.aiL', // Email message content (main)
+        '.ii.gt .a3s', // Alternative message content
+        '[role="listitem"] .a3s', // Message in conversation view
+        '.adn.ads .a3s', // Message body alternative
+        '.ii.gt', // Message container
+        '.gs .a3s', // Another message format
+        '.h7', // Email body alternative
+        '.Am.Al.editable', // Compose window
+        '[g_editable="true"]', // Gmail compose area
+        '.editable', // Generic editable area
+        '[contenteditable="true"]', // Any contenteditable area
+        '.gmail_default' // Gmail default content
       ];
       break;
       
@@ -235,7 +289,7 @@ function findContentArea() {
       ];
   }
   
-  // Try each selector
+  // Try each selector for non-ChatGPT pages
   for (const selector of contentSelectors) {
     const element = document.querySelector(selector);
     if (element) {
@@ -254,13 +308,14 @@ function findContentArea() {
             console.log(`Found Google Docs content using selector: ${selector}`);
             return element;
           }
-        } else if (pageType === 'chatgpt') {
-          // For ChatGPT, check if content contains our PII
+        } else if (pageType === 'gmail') {
+          // For Gmail, check if content contains email-like content or our PII
           const combinedText = textNodes.map(n => n.textContent).join(' ');
-          console.log(`ChatGPT content sample: "${combinedText.substring(0, 100)}"`);
+          console.log(`Gmail content sample: "${combinedText.substring(0, 100)}"`);
           if (combinedText.includes('İde') || combinedText.includes('Tuzla') || combinedText.includes('Neris') || 
-              combinedText.includes('emregursoy@gmail.com') || combinedText.includes('yücel.saygin')) {
-            console.log(`Found ChatGPT conversation content using selector: ${selector}`);
+              combinedText.includes('emregursoy@gmail.com') || combinedText.includes('yücel.saygin') ||
+              combinedText.includes('@') || combinedText.length > 100) { // Email content indicators
+            console.log(`Found Gmail email content using selector: ${selector}`);
             return element;
           }
         } else {
@@ -272,30 +327,13 @@ function findContentArea() {
     }
   }
   
-  // Special handling for ChatGPT: search through all conversation elements
-  if (pageType === 'chatgpt') {
-    console.log("Primary ChatGPT selectors failed, searching all conversation elements...");
-    
-    // Look for any element containing our PII text
-    const allElements = document.querySelectorAll('div, article, section, p, span');
-    for (const element of allElements) {
-      const text = element.textContent || '';
-      if (text.includes('İde') || text.includes('Tuzla') || text.includes('Neris') || 
-          text.includes('emregursoy@gmail.com') || text.includes('yücel.saygin')) {
-        
-        // Make sure this element has sufficient content and isn't just a fragment
-        if (text.length > 50) {
-          console.log(`Found ChatGPT content in element: ${element.tagName}.${element.className}`);
-          console.log(`Content sample: "${text.substring(0, 200)}"`);
-          return element;
-        }
-      }
-    }
+  // Fallback: use document.body for non-ChatGPT pages
+  if (pageType !== 'chatgpt') {
+    console.log("Using document.body as fallback");
+    return document.body;
   }
   
-  // Fallback: use document.body
-  console.log("Using document.body as fallback");
-  return document.body;
+  return null;
 }
 
 // Generate unique suggestion ID
@@ -313,6 +351,141 @@ function getRedactionLabel(piiType) {
         'ORGANIZATION': '[ORGANIZATION]'
     };
     return labels[piiType] || '[REDACTED]';
+}
+
+// ChatGPT Integration Helper Functions
+// These functions safely update ChatGPT's input using React's synthetic event system
+
+// Safely set ChatGPT input value and trigger React state update
+function setChatGPTInputValue(newText) {
+    try {
+        const textarea = document.querySelector("textarea");
+        if (!textarea) {
+            console.warn("[PII Extension] ChatGPT input textarea not found");
+            return false;
+        }
+        
+        console.log("[PII Extension] Setting ChatGPT input value safely...");
+        
+        // IMPORTANT: Only update the value, never replace DOM nodes
+        textarea.value = newText;
+        
+        // Dispatch React-compatible events to maintain state sync
+        const inputEvent = new Event("input", { bubbles: true });
+        textarea.dispatchEvent(inputEvent);
+        
+        // Also dispatch change event for compatibility
+        const changeEvent = new Event("change", { bubbles: true });
+        textarea.dispatchEvent(changeEvent);
+        
+        // Focus to ensure proper React state
+        textarea.focus();
+        
+        console.log("[PII Extension] ChatGPT input updated successfully without DOM manipulation");
+        return true;
+    } catch (error) {
+        console.error("[PII Extension] Error updating ChatGPT input:", error);
+        return false;
+    }
+}
+
+// Toggle ChatGPT send button state during processing
+function toggleChatGPTSendButton(enabled) {
+    try {
+        // Try multiple possible selectors for the send button
+        const sendButtonSelectors = [
+            'button[data-testid="send-button"]',
+            'button[aria-label*="Send"]',
+            'button[aria-label*="send"]',
+            '[data-testid="send-button"]',
+            'form button[type="submit"]',
+            'button:has(svg):last-of-type'
+        ];
+        
+        let sendBtn = null;
+        for (const selector of sendButtonSelectors) {
+            try {
+                sendBtn = document.querySelector(selector);
+                if (sendBtn) {
+                    console.log(`[PII Extension] Found send button with selector: ${selector}`);
+                    break;
+                }
+            } catch (selectorError) {
+                console.warn(`[PII Extension] Error with selector ${selector}:`, selectorError);
+            }
+        }
+        
+        if (sendBtn) {
+            // IMPORTANT: Only modify properties, never replace the element
+            sendBtn.disabled = !enabled;
+            sendBtn.style.opacity = enabled ? '1' : '0.5';
+            sendBtn.style.pointerEvents = enabled ? 'auto' : 'none';
+            console.log(`[PII Extension] Send button ${enabled ? 'enabled' : 'disabled'} safely`);
+            return true;
+        } else {
+            console.warn("[PII Extension] ChatGPT send button not found");
+            return false;
+        }
+    } catch (error) {
+        console.error("[PII Extension] Error toggling send button:", error);
+        return false;
+    }
+}
+
+// Extract sanitized text from the content area after redactions
+function extractSanitizedText() {
+    try {
+        const editor = findContentArea();
+        if (!editor) {
+            console.warn("[PII Extension] No content area found for text extraction");
+            return null;
+        }
+        
+        let sanitizedText = '';
+        
+        // Walk through all text nodes and redacted elements safely
+        const walker = document.createTreeWalker(
+            editor,
+            NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT,
+            {
+                acceptNode: function(node) {
+                    try {
+                        // Accept text nodes
+                        if (node.nodeType === Node.TEXT_NODE && node.textContent.trim()) {
+                            return NodeFilter.FILTER_ACCEPT;
+                        }
+                        // Accept redacted spans
+                        if (node.nodeType === Node.ELEMENT_NODE && 
+                            node.classList && node.classList.contains('pii-redacted')) {
+                            return NodeFilter.FILTER_ACCEPT;
+                        }
+                        return NodeFilter.FILTER_SKIP;
+                    } catch (error) {
+                        console.error("[PII Extension] Error in node filter:", error);
+                        return NodeFilter.FILTER_SKIP;
+                    }
+                }
+            }
+        );
+        
+        let node;
+        while (node = walker.nextNode()) {
+            try {
+                if (node.nodeType === Node.TEXT_NODE) {
+                    sanitizedText += node.textContent;
+                } else if (node.classList && node.classList.contains('pii-redacted')) {
+                    sanitizedText += node.textContent; // This will be the redaction label like [NAME]
+                }
+            } catch (error) {
+                console.error("[PII Extension] Error processing node:", error);
+            }
+        }
+        
+        return sanitizedText.trim();
+    } catch (error) {
+        console.error("[PII Extension] Error extracting sanitized text:", error);
+        return null;
+    }
 }
 
 // Simplified text node finder without aggressive filtering
@@ -346,128 +519,211 @@ function getSimpleTextNodesIn(element) {
 
 // Clears all PII highlights from the document
 function clearHighlights(showAlert = true) {
-    // Clear regular highlights by replacing HTML
-    const editor = findContentArea();
-    let highlightedElements = [];
-    let redactedElements = [];
-    let textHighlightCount = 0;
-    
-    if (editor) {
-        // Find highlighted spans
-        highlightedElements = editor.querySelectorAll(`.${HIGHLIGHT_CLASS}`);
-        textHighlightCount = highlightedElements.length;
+    try {
+        // Clear regular highlights by replacing HTML
+        const editor = findContentArea();
+        let highlightedElements = [];
+        let redactedElements = [];
+        let textHighlightCount = 0;
         
-        // Find redacted spans
-        redactedElements = editor.querySelectorAll('.pii-redacted');
-        
-        // Replace highlights with original text
-        if (textHighlightCount > 0) {
-            highlightedElements.forEach(el => {
-                const textNode = document.createTextNode(el.textContent);
-                el.parentNode.replaceChild(textNode, el);
-            });
+        if (editor) {
+            try {
+                // Find highlighted spans
+                highlightedElements = editor.querySelectorAll(`.${HIGHLIGHT_CLASS}`);
+                textHighlightCount = highlightedElements.length;
+                
+                // Find redacted spans
+                redactedElements = editor.querySelectorAll('.pii-redacted');
+                
+                // Replace highlights with original text safely
+                if (textHighlightCount > 0) {
+                    highlightedElements.forEach((el, index) => {
+                        try {
+                            if (el.parentNode && el.parentNode.nodeType === Node.ELEMENT_NODE) {
+                                const textNode = document.createTextNode(el.textContent);
+                                el.parentNode.replaceChild(textNode, el);
+                            }
+                        } catch (error) {
+                            console.error(`[PII Extension] Error clearing highlight ${index}:`, error);
+                        }
+                    });
+                }
+                
+                // Replace redacted items with original text safely
+                if (redactedElements.length > 0) {
+                    redactedElements.forEach((el, index) => {
+                        try {
+                            if (el.parentNode && el.parentNode.nodeType === Node.ELEMENT_NODE) {
+                                const originalValue = el.getAttribute('data-original-value') || el.textContent;
+                                const textNode = document.createTextNode(originalValue);
+                                el.parentNode.replaceChild(textNode, el);
+                            }
+                        } catch (error) {
+                            console.error(`[PII Extension] Error clearing redacted element ${index}:`, error);
+                        }
+                    });
+                }
+            } catch (error) {
+                console.error("[PII Extension] Error processing editor elements:", error);
+            }
         }
         
-        // Replace redacted items with original text
-        if (redactedElements.length > 0) {
-            redactedElements.forEach(el => {
-                const originalValue = el.getAttribute('data-original-value') || el.textContent;
-                const textNode = document.createTextNode(originalValue);
-                el.parentNode.replaceChild(textNode, el);
+        // Clear overlay highlights safely
+        try {
+            const overlayElements = document.querySelectorAll('.pii-overlay-highlight');
+            overlayElements.forEach((el, index) => {
+                try {
+                    if (el.parentNode) {
+                        el.remove();
+                    }
+                } catch (error) {
+                    console.error(`[PII Extension] Error removing overlay ${index}:`, error);
+                }
             });
+        } catch (error) {
+            console.error("[PII Extension] Error clearing overlays:", error);
         }
-    }
-    
-    // Clear overlay highlights
-    const overlayElements = document.querySelectorAll('.pii-overlay-highlight');
-    overlayElements.forEach(el => el.remove());
-    
-    // Clear any open suggestion popups
-    document.querySelectorAll(`.${SUGGESTION_POPUP_CLASS}`).forEach(popup => popup.remove());
-    
-    // Reset suggestion states
-    suggestionStates.clear();
-    
-    const totalCleared = textHighlightCount + redactedElements.length + overlayElements.length;
-    
-    // Only show alert if explicitly requested and there were highlights to clear
-    if (showAlert && totalCleared > 0) {
-        alert(`All highlights and redactions cleared. (${textHighlightCount} highlights + ${redactedElements.length} redactions + ${overlayElements.length} overlays)`);
-    } else if (showAlert && totalCleared === 0) {
-        alert("No highlights to clear.");
+        
+        // Clear any open suggestion popups safely
+        try {
+            document.querySelectorAll(`.${SUGGESTION_POPUP_CLASS}`).forEach((popup, index) => {
+                try {
+                    if (popup.parentNode) {
+                        popup.remove();
+                    }
+                } catch (error) {
+                    console.error(`[PII Extension] Error removing popup ${index}:`, error);
+                }
+            });
+        } catch (error) {
+            console.error("[PII Extension] Error clearing popups:", error);
+        }
+        
+        // Reset suggestion states
+        suggestionStates.clear();
+        
+        const totalCleared = textHighlightCount + redactedElements.length;
+        
+        // Only show alert if explicitly requested and there were highlights to clear
+        if (showAlert && totalCleared > 0) {
+            alert(`All highlights and redactions cleared. (${textHighlightCount} highlights + ${redactedElements.length} redactions)`);
+        } else if (showAlert && totalCleared === 0) {
+            alert("No highlights to clear.");
+        }
+        
+        console.log(`[PII Extension] Cleared ${totalCleared} elements successfully`);
+    } catch (error) {
+        console.error("[PII Extension] Critical error in clearHighlights:", error);
+        if (showAlert) {
+            alert("An error occurred while clearing highlights. Some elements may remain highlighted.");
+        }
     }
 }
 
 // Accept all detected PII suggestions automatically
 function acceptAllPII() {
-    console.log("Accept All PII initiated...");
-    
-    // Get all highlighted PII elements that haven't been processed yet
-    const piiHighlights = document.querySelectorAll('.pii-highlight');
-    const overlayElements = document.querySelectorAll('[data-pii-overlay]');
-    
-    let acceptedCount = 0;
-    
-    // Process regular text highlights
-    piiHighlights.forEach(highlight => {
-        const piiType = highlight.getAttribute('data-pii-type');
-        const piiValue = highlight.getAttribute('data-pii-value');
+    try {
+        console.log("[PII Extension] Accept All PII initiated...");
         
-        if (piiType && piiValue) {
-            // Replace with redaction label directly
-            const redactionLabel = getRedactionLabel(piiType);
-            const redactedSpan = document.createElement('span');
-            redactedSpan.textContent = redactionLabel;
-            redactedSpan.style.cssText = `
-                background-color: #22D3EE;
-                color: black;
-                padding: 2px 6px;
-                border-radius: 3px;
-                font-weight: bold;
-                font-size: 12px;
-            `;
-            redactedSpan.setAttribute('data-original-value', piiValue);
-            redactedSpan.setAttribute('data-pii-type', piiType);
-            redactedSpan.classList.add('pii-redacted');
-            
-            // Replace the highlight with redacted text
-            highlight.parentNode.replaceChild(redactedSpan, highlight);
-            acceptedCount++;
-        }
-    });
-    
-    // Process overlay elements
-    overlayElements.forEach(overlay => {
-        const piiType = overlay.getAttribute('data-pii-type');
-        const piiValue = overlay.getAttribute('data-pii-value');
+        const pageType = detectPageType();
         
-        if (piiType && piiValue) {
-            // Change overlay to show it's redacted
-            const redactionLabel = getRedactionLabel(piiType);
-            overlay.style.backgroundColor = 'rgba(34, 211, 238, 0.9)';
-            overlay.style.border = '2px solid #22D3EE';
-            overlay.innerHTML = `<span style="color: black; font-weight: bold; font-size: 12px; padding: 2px; display: flex; align-items: center; justify-content: center; height: 100%;">${redactionLabel}</span>`;
-            overlay.onclick = null; // Remove click handler
-            overlay.style.cursor = 'default';
-            overlay.title = `Redacted ${piiType}: ${piiValue}`;
-            acceptedCount++;
+        // CRITICAL: For ChatGPT, use special non-DOM approach
+        if (pageType === 'chatgpt') {
+            acceptAllPIIForChatGPT();
+            return;
         }
-    });
-    
-    // Clear any open suggestion popups
-    const existingPopup = document.getElementById('pii-suggestion-popup');
-    if (existingPopup) {
-        existingPopup.remove();
+        
+        // Disable send button during processing if on ChatGPT
+        if (pageType === 'chatgpt') {
+            toggleChatGPTSendButton(false);
+        }
+        
+        // Get all highlighted PII elements that haven't been processed yet
+        const piiHighlights = document.querySelectorAll('.pii-highlight');
+        const overlayElements = document.querySelectorAll('[data-pii-overlay]');
+        
+        let acceptedCount = 0;
+        
+        // Process regular text highlights safely
+        piiHighlights.forEach((highlight, index) => {
+            try {
+                const piiType = highlight.getAttribute('data-pii-type');
+                const piiValue = highlight.getAttribute('data-pii-value');
+                
+                if (piiType && piiValue) {
+                    // Replace with redaction label directly
+                    const redactionLabel = getRedactionLabel(piiType);
+                    const redactedSpan = document.createElement('span');
+                    redactedSpan.textContent = redactionLabel;
+                    redactedSpan.style.cssText = `
+                        background-color: #22D3EE;
+                        color: black;
+                        padding: 2px 6px;
+                        border-radius: 3px;
+                        font-weight: bold;
+                        font-size: 12px;
+                    `;
+                    redactedSpan.setAttribute('data-original-value', piiValue);
+                    redactedSpan.setAttribute('data-pii-type', piiType);
+                    redactedSpan.classList.add('pii-redacted');
+                    
+                    // IMPORTANT: Only replace if parent exists and is safe to modify
+                    if (highlight.parentNode && highlight.parentNode.nodeType === Node.ELEMENT_NODE) {
+                        highlight.parentNode.replaceChild(redactedSpan, highlight);
+                        acceptedCount++;
+                    } else {
+                        console.warn(`[PII Extension] Cannot safely replace highlight ${index}`);
+                    }
+                }
+            } catch (error) {
+                console.error(`[PII Extension] Error processing highlight ${index}:`, error);
+            }
+        });
+        
+        // Process overlay elements safely
+        overlayElements.forEach((overlay, index) => {
+            try {
+                const piiType = overlay.getAttribute('data-pii-type');
+                const piiValue = overlay.getAttribute('data-pii-value');
+                
+                if (piiType && piiValue) {
+                    // Change overlay to show it's redacted
+                    const redactionLabel = getRedactionLabel(piiType);
+                    overlay.style.backgroundColor = 'rgba(34, 211, 238, 0.9)';
+                    overlay.style.border = '2px solid #22D3EE';
+                    overlay.innerHTML = `<span style="color: black; font-weight: bold; font-size: 12px; padding: 2px; display: flex; align-items: center; justify-content: center; height: 100%;">${redactionLabel}</span>`;
+                    overlay.onclick = null; // Remove click handler
+                    overlay.style.cursor = 'default';
+                    overlay.title = `Redacted ${piiType}: ${piiValue}`;
+                    acceptedCount++;
+                }
+            } catch (error) {
+                console.error(`[PII Extension] Error processing overlay ${index}:`, error);
+            }
+        });
+        
+        // Clear any open suggestion popups safely
+        try {
+            const existingPopup = document.getElementById('pii-suggestion-popup');
+            if (existingPopup && existingPopup.parentNode) {
+                existingPopup.remove();
+            }
+        } catch (error) {
+            console.error("[PII Extension] Error removing popup:", error);
+        }
+        
+        // Show confirmation
+        if (acceptedCount > 0) {
+            alert(`Successfully accepted and redacted ${acceptedCount} PII elements.`);
+        } else {
+            alert("No PII detected to accept. Please scan for PII first.");
+        }
+        
+        console.log(`[PII Extension] Accept All completed. ${acceptedCount} PII elements processed.`);
+    } catch (error) {
+        console.error("[PII Extension] Critical error in acceptAllPII:", error);
+        alert("An error occurred while processing PII. Please try again.");
     }
-    
-    // Show confirmation
-    if (acceptedCount > 0) {
-        alert(`Successfully accepted and redacted ${acceptedCount} PII elements.`);
-    } else {
-        alert("No PII detected to accept. Please scan for PII first.");
-    }
-    
-    console.log(`Accept All completed. ${acceptedCount} PII elements processed.`);
 }
 
 // Handle model selection change
@@ -543,38 +799,165 @@ function handleModelChange(event) {
 
 // Handles the Scan button click event
 async function handleScanClick() {
-  console.log("Scan initiated...");
-  
-  // Clear previous highlights silently before starting new scan
-  clearHighlights(false);
-  
-  const editor = findContentArea();
-  if (!editor) {
-    alert("Content area not found. Please make sure you're on a supported page.");
-    return;
-  }
-  
-  // 1. Use MOCK Data based on current model
-  const piiResults = getMockPIIData(currentModel);
-  
-  // 2. Process results and highlight
-  if (piiResults && piiResults.detected_entities && piiResults.detected_entities.length > 0) {
-      alert(`Scan complete with ${MODEL_CONFIGS[currentModel].name}! ${piiResults.total_entities} PII suggestions found. Click highlighted text to review and accept/reject each suggestion.`);
-      highlightPiiInDocument(piiResults.detected_entities);
-  } else {
-      alert(`Scan complete with ${MODEL_CONFIGS[currentModel].name}, no PII found.`);
+  try {
+    console.log("[PII Extension] Scan initiated...");
+    
+    const pageType = detectPageType();
+    
+    // Disable send button during scanning if on ChatGPT
+    if (pageType === 'chatgpt') {
+      toggleChatGPTSendButton(false);
+    }
+    
+    // Clear previous highlights silently before starting new scan
+    try {
+      clearHighlights(false);
+    } catch (clearError) {
+      console.error("[PII Extension] Error clearing highlights:", clearError);
+    }
+    
+    const editor = findContentArea();
+    if (!editor) {
+      alert("Content area not found. Please make sure you're on a supported page.");
+      
+      // Re-enable send button if scan fails
+      if (pageType === 'chatgpt') {
+        try {
+          toggleChatGPTSendButton(true);
+        } catch (buttonError) {
+          console.error("[PII Extension] Error re-enabling send button after scan failure:", buttonError);
+        }
+      }
+      return;
+    }
+    
+    // Extract text content from the editor
+    let textToAnalyze = '';
+    if (pageType === 'chatgpt') {
+      const textarea = document.querySelector("textarea");
+      textToAnalyze = textarea ? textarea.value : '';
+    } else {
+      textToAnalyze = editor.textContent || editor.innerText || '';
+    }
+    
+    if (!textToAnalyze.trim()) {
+      alert("No text found to analyze. Please add some content first.");
+      if (pageType === 'chatgpt') {
+        try {
+          toggleChatGPTSendButton(true);
+        } catch (buttonError) {
+          console.error("[PII Extension] Error re-enabling send button:", buttonError);
+        }
+      }
+      return;
+    }
+    
+    // Show loading indicator
+    const scanButton = document.getElementById("pii-scan-button");
+    const originalButtonText = scanButton.innerHTML;
+    scanButton.innerHTML = `<span role="img" aria-label="Loading">⏳</span> Scanning...`;
+    scanButton.disabled = true;
+    
+    let piiResults;
+    try {
+      // Try to use backend API first
+      const backendAvailable = await checkBackendHealth();
+      
+      if (backendAvailable) {
+        console.log("[PII Extension] Backend available, using Presidio API...");
+        piiResults = await detectPIIFromBackend(textToAnalyze, currentModel);
+      } else {
+        console.warn("[PII Extension] Backend unavailable, using fallback mock data");
+        piiResults = getMockPIIData(currentModel);
+        alert("⚠️ Backend server not available. Using fallback mode. Please ensure the backend server is running on http://127.0.0.1:5000");
+      }
+    } catch (error) {
+      console.error("[PII Extension] Error detecting PII:", error);
+      // Fallback to mock data on error
+      piiResults = getMockPIIData(currentModel);
+      alert("⚠️ Error connecting to backend. Using fallback mode. Please check if the backend server is running.");
+    } finally {
+      // Restore button
+      scanButton.innerHTML = originalButtonText;
+      scanButton.disabled = false;
+    }
+    
+    // Process results and highlight
+    if (piiResults && piiResults.detected_entities && piiResults.detected_entities.length > 0) {
+        const modelName = MODEL_CONFIGS[currentModel]?.name || currentModel;
+        alert(`Scan complete with ${modelName}! ${piiResults.total_entities} PII suggestions found. Click highlighted text to review and accept/reject each suggestion.`);
+        
+        try {
+          highlightPiiInDocument(piiResults.detected_entities);
+        } catch (highlightError) {
+          console.error("[PII Extension] Error highlighting PII:", highlightError);
+          alert("PII detected but highlighting failed. Please try again.");
+        }
+        
+        // Re-enable send button after highlighting is complete
+        if (pageType === 'chatgpt') {
+          setTimeout(() => {
+            try {
+              toggleChatGPTSendButton(true);
+            } catch (buttonError) {
+              console.error("[PII Extension] Error re-enabling send button after highlighting:", buttonError);
+            }
+          }, 500);
+        }
+    } else {
+        const modelName = MODEL_CONFIGS[currentModel]?.name || currentModel;
+        alert(`Scan complete with ${modelName}, no PII found.`);
+        
+        // Re-enable send button if no PII found
+        if (pageType === 'chatgpt') {
+          try {
+            toggleChatGPTSendButton(true);
+          } catch (buttonError) {
+            console.error("[PII Extension] Error re-enabling send button after no PII found:", buttonError);
+          }
+        }
+    }
+  } catch (error) {
+    console.error("[PII Extension] Critical error in handleScanClick:", error);
+    
+    // Always try to re-enable send button in case of errors
+    try {
+      const pageType = detectPageType();
+      if (pageType === 'chatgpt') {
+        toggleChatGPTSendButton(true);
+      }
+      // Restore button
+      const scanButton = document.getElementById("pii-scan-button");
+      if (scanButton) {
+        scanButton.innerHTML = `<span role="img" aria-label="Shield">🛡️</span> Scan for PII`;
+        scanButton.disabled = false;
+      }
+    } catch (buttonError) {
+      console.error("[PII Extension] Error re-enabling send button after critical error:", buttonError);
+    }
+    
+    alert("An error occurred during scanning. Please try again.");
   }
 }
 
 // The core function to highlight PII using safe regex-based HTML replacement
 function highlightPiiInDocument(entities) {
+    const pageType = detectPageType();
+    
+    // CRITICAL: For ChatGPT, use completely different approach
+    if (pageType === 'chatgpt') {
+        console.log("[PII Extension] Using ChatGPT-safe highlighting approach");
+        highlightPiiForChatGPT(entities);
+        return;
+    }
+    
+    // Original approach for other platforms
     const editor = findContentArea();
     if (!editor) {
         console.warn("Cannot highlight PII: Content area not found");
         return;
     }
 
-    const pageType = detectPageType();
     console.log("Starting regex-based PII highlighting process...");
     console.log("Editor element:", editor);
 
@@ -655,6 +1038,104 @@ function highlightPiiInDocument(entities) {
         } else {
             alert("No PII found to highlight. Make sure your document contains the sample text.");
         }
+    }
+}
+
+// ChatGPT-specific highlighting that never touches DOM
+function highlightPiiForChatGPT(entities) {
+    try {
+        const textarea = document.querySelector("textarea");
+        if (!textarea) {
+            console.warn("[PII Extension] ChatGPT textarea not found");
+            alert("ChatGPT input not found. Please make sure you're in the chat interface.");
+            return;
+        }
+        
+        const originalText = textarea.value;
+        if (!originalText.trim()) {
+            alert("No text found in ChatGPT input. Please type a message first.");
+            return;
+        }
+        
+        console.log("[PII Extension] Analyzing ChatGPT text for PII...");
+        
+        // Find PII in the text without modifying DOM
+        const foundPII = [];
+        entities.forEach(entity => {
+            const lowerText = originalText.toLowerCase();
+            const lowerEntity = entity.value.toLowerCase();
+            
+            if (lowerText.includes(lowerEntity)) {
+                foundPII.push(entity);
+            }
+        });
+        
+        if (foundPII.length === 0) {
+            alert("No PII found in your ChatGPT message.");
+            return;
+        }
+        
+        // Store the original text and PII info for later use
+        window.chatGPTOriginalText = originalText;
+        window.chatGPTFoundPII = foundPII;
+        
+        // Show summary without highlighting
+        const piiSummary = foundPII.map(pii => `${pii.type}: "${pii.value}"`).join('\n');
+        const userConfirm = confirm(
+            `Found ${foundPII.length} PII items in your message:\n\n${piiSummary}\n\n` +
+            `Click OK to use the "Accept All" button to redact them, or Cancel to review individual items.`
+        );
+        
+        if (userConfirm) {
+            // Auto-accept all PII
+            acceptAllPIIForChatGPT();
+        } else {
+            alert("Use the extension buttons to manage PII redaction.");
+        }
+        
+    } catch (error) {
+        console.error("[PII Extension] Error in ChatGPT PII analysis:", error);
+        alert("Error analyzing ChatGPT text. Please try again.");
+    }
+}
+
+// ChatGPT-specific accept all function
+function acceptAllPIIForChatGPT() {
+    try {
+        const textarea = document.querySelector("textarea");
+        if (!textarea || !window.chatGPTOriginalText || !window.chatGPTFoundPII) {
+            console.warn("[PII Extension] ChatGPT data not available for redaction");
+            alert("Please scan for PII first.");
+            return;
+        }
+        
+        let redactedText = window.chatGPTOriginalText;
+        
+        // Sort PII by length (longest first) to avoid partial replacements
+        const sortedPII = window.chatGPTFoundPII.sort((a, b) => b.value.length - a.value.length);
+        
+        // Replace each PII with its redaction label
+        sortedPII.forEach(pii => {
+            const redactionLabel = getRedactionLabel(pii.type);
+            // Use global replace to catch all instances
+            redactedText = redactedText.replace(new RegExp(pii.value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), redactionLabel);
+        });
+        
+        // Update ChatGPT input safely
+        const success = setChatGPTInputValue(redactedText);
+        if (success) {
+            alert(`Successfully redacted ${sortedPII.length} PII items. Your message is ready to send.`);
+            
+            // Clean up stored data
+            delete window.chatGPTOriginalText;
+            delete window.chatGPTFoundPII;
+        } else {
+            alert("Failed to update ChatGPT input. Please try again.");
+        }
+        
+    } catch (error) {
+        console.error("[PII Extension] Error in ChatGPT accept all:", error);
+        alert("Error redacting PII. Please try again.");
     }
 }
 
@@ -952,6 +1433,7 @@ function showOverlaySuggestionPopup(overlayElement) {
 function acceptOverlaySuggestion(overlayElement, suggestionId, popup) {
     const piiValue = overlayElement.getAttribute('data-pii-value');
     const piiType = overlayElement.getAttribute('data-pii-type');
+    const pageType = detectPageType();
     
     // Store decision
     suggestionStates.set(suggestionId, 'accepted');
@@ -964,6 +1446,16 @@ function acceptOverlaySuggestion(overlayElement, suggestionId, popup) {
     overlayElement.onclick = null; // Remove click handler
     overlayElement.style.cursor = 'default';
     overlayElement.title = `Redacted ${piiType}: ${piiValue}`;
+    
+    // If on ChatGPT, update the input field with sanitized content
+    if (pageType === 'chatgpt') {
+        setTimeout(() => {
+            const sanitizedText = extractSanitizedText();
+            if (sanitizedText) {
+                setChatGPTInputValue(sanitizedText);
+            }
+        }, 100); // Small delay to ensure DOM is updated
+    }
     
     // Remove popup
     popup.remove();
@@ -1048,35 +1540,73 @@ function showSuggestionPopup(highlightElement) {
 
 // Accept PII suggestion and redact
 function acceptSuggestion(highlightElement, suggestionId, popup) {
-    const piiValue = highlightElement.getAttribute('data-pii-value');
-    const piiType = highlightElement.getAttribute('data-pii-type');
-    
-    // Store decision
-    suggestionStates.set(suggestionId, 'accepted');
-    
-    // Replace with redaction label
-    const redactionLabel = getRedactionLabel(piiType);
-    const redactedSpan = document.createElement('span');
-    redactedSpan.textContent = redactionLabel;
-    redactedSpan.style.cssText = `
-        background-color: #22D3EE;
-        color: black;
-        padding: 2px 6px;
-        border-radius: 3px;
-        font-weight: bold;
-        font-size: 12px;
-    `;
-    redactedSpan.setAttribute('data-original-value', piiValue);
-    redactedSpan.setAttribute('data-pii-type', piiType);
-    redactedSpan.classList.add('pii-redacted');
-    
-    // Replace the highlight with redacted version
-    highlightElement.parentNode.replaceChild(redactedSpan, highlightElement);
-    
-    // Remove popup
-    popup.remove();
-    
-    console.log(`Accepted suggestion: ${piiType} "${piiValue}" -> "${redactionLabel}"`);
+    try {
+        const piiValue = highlightElement.getAttribute('data-pii-value');
+        const piiType = highlightElement.getAttribute('data-pii-type');
+        const pageType = detectPageType();
+        
+        // Store decision
+        suggestionStates.set(suggestionId, 'accepted');
+        
+        // Replace with redaction label
+        const redactionLabel = getRedactionLabel(piiType);
+        const redactedSpan = document.createElement('span');
+        redactedSpan.textContent = redactionLabel;
+        redactedSpan.style.cssText = `
+            background-color: #22D3EE;
+            color: black;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-weight: bold;
+            font-size: 12px;
+        `;
+        redactedSpan.setAttribute('data-original-value', piiValue);
+        redactedSpan.setAttribute('data-pii-type', piiType);
+        redactedSpan.classList.add('pii-redacted');
+        
+        // IMPORTANT: Only replace if parent exists and is safe to modify
+        if (highlightElement.parentNode && highlightElement.parentNode.nodeType === Node.ELEMENT_NODE) {
+            highlightElement.parentNode.replaceChild(redactedSpan, highlightElement);
+        } else {
+            console.warn("[PII Extension] Cannot safely replace highlight element");
+        }
+        
+        // If on ChatGPT, update the input field with sanitized content
+        if (pageType === 'chatgpt') {
+            setTimeout(() => {
+                try {
+                    const sanitizedText = extractSanitizedText();
+                    if (sanitizedText) {
+                        setChatGPTInputValue(sanitizedText);
+                    }
+                } catch (updateError) {
+                    console.error("[PII Extension] Error updating ChatGPT input after individual acceptance:", updateError);
+                }
+            }, 100); // Small delay to ensure DOM is updated
+        }
+        
+        // Remove popup safely
+        try {
+            if (popup && popup.parentNode) {
+                popup.remove();
+            }
+        } catch (popupError) {
+            console.error("[PII Extension] Error removing popup:", popupError);
+        }
+        
+        console.log(`[PII Extension] Accepted suggestion: ${piiType} "${piiValue}" -> "${redactionLabel}"`);
+    } catch (error) {
+        console.error("[PII Extension] Error in acceptSuggestion:", error);
+        
+        // Try to remove popup even if other operations failed
+        try {
+            if (popup && popup.parentNode) {
+                popup.remove();
+            }
+        } catch (popupError) {
+            console.error("[PII Extension] Error removing popup after error:", popupError);
+        }
+    }
 }
 
 // Reject PII suggestion and keep original

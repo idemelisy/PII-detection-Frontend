@@ -445,25 +445,126 @@ function filterRedactedPII(entities, text) {
 // ChatGPT Integration Helper Functions
 // These functions safely update ChatGPT's input using React's synthetic event system
 
+/**
+ * Enhanced textarea finder for ChatGPT/Gemini
+ * Tries multiple selectors and methods to find the input field
+ * Returns { textarea, selector, text } or null if not found
+ */
+function findChatGPTTextarea() {
+    const pageType = detectPageType();
+    if (pageType !== 'chatgpt' && pageType !== 'gemini') {
+        return null;
+    }
+    
+    const isGemini = pageType === 'gemini';
+    
+    // Enhanced selectors for ChatGPT/Gemini - try more specific ones first
+    const textareaSelectors = [
+        // ChatGPT specific selectors
+        'textarea#prompt-textarea',
+        'textarea[data-id="root"]',
+        'textarea[tabindex="0"]',
+        'div[contenteditable="true"][data-id="root"]',
+        'div[contenteditable="true"][tabindex="0"]',
+        'textarea[aria-label*="prompt"]',
+        'textarea[aria-label*="Message"]',
+        'textarea[aria-label*="message"]',
+        'textarea[placeholder*="prompt"]',
+        'textarea[placeholder*="Message"]',
+        'textarea[placeholder*="message"]',
+        'textarea[contenteditable="true"]',
+        'div[contenteditable="true"][role="textbox"]',
+        'div[contenteditable="true"]',
+        // More generic selectors
+        'textarea',
+        'div[role="textbox"]'
+    ];
+    
+    let textarea = null;
+    let foundSelector = null;
+    
+    for (const selector of textareaSelectors) {
+        try {
+            const elements = document.querySelectorAll(selector);
+            // Try to find the one that's actually visible and is the input
+            for (const el of elements) {
+                const rect = el.getBoundingClientRect();
+                const isVisible = rect.width > 0 && rect.height > 0;
+                const isInput = el.tagName === 'TEXTAREA' || 
+                              (el.contentEditable === 'true' && el.getAttribute('role') === 'textbox') ||
+                              (el.contentEditable === 'true' && el.hasAttribute('data-id'));
+                
+                if (isVisible && isInput) {
+                    textarea = el;
+                    foundSelector = selector;
+                    break;
+                }
+            }
+            
+            if (textarea) break;
+            
+            // Fallback: just use the first one if any found
+            if (elements.length > 0) {
+                textarea = elements[0];
+                foundSelector = selector;
+                break;
+            }
+        } catch (e) {
+            console.warn(`[PII Extension] Error with selector ${selector}:`, e);
+        }
+    }
+    
+    if (!textarea) {
+        console.warn(`[PII Extension] ${isGemini ? 'Gemini' : 'ChatGPT'} input field not found`);
+        console.warn('[PII Extension] Available textareas on page:', document.querySelectorAll('textarea').length);
+        console.warn('[PII Extension] Available contenteditable divs:', document.querySelectorAll('div[contenteditable="true"]').length);
+        return null;
+    }
+    
+    // Get text from input field (handle both textarea.value and contenteditable divs)
+    let text = textarea.value || textarea.textContent || textarea.innerText || '';
+    
+    // For contenteditable divs, try to get text from child nodes
+    if (!text && textarea.contentEditable === 'true') {
+        const walker = document.createTreeWalker(
+            textarea,
+            NodeFilter.SHOW_TEXT,
+            null,
+            false
+        );
+        
+        let textNodes = [];
+        let node;
+        while (node = walker.nextNode()) {
+            textNodes.push(node.textContent);
+        }
+        text = textNodes.join('');
+    }
+    
+    // Also try querySelector for nested divs
+    if (!text && textarea.querySelector) {
+        const nestedDiv = textarea.querySelector('div');
+        if (nestedDiv) {
+            text = nestedDiv.textContent || nestedDiv.innerText || '';
+        }
+    }
+    
+    return {
+        textarea: textarea,
+        selector: foundSelector,
+        text: text
+    };
+}
+
 // Safely set ChatGPT/Gemini input value and trigger React state update
 function setChatGPTInputValue(newText, textareaElement = null) {
     try {
-        // Use provided textarea or try to find it
+        // Use provided textarea or try to find it using the enhanced finder
         let textarea = textareaElement;
         if (!textarea) {
-            const textareaSelectors = [
-                'textarea[aria-label*="prompt"]',
-                'textarea[aria-label*="message"]',
-                'textarea[placeholder*="prompt"]',
-                'textarea[placeholder*="message"]',
-                'textarea[contenteditable="true"]',
-                'div[contenteditable="true"][role="textbox"]',
-                'textarea'
-            ];
-            
-            for (const selector of textareaSelectors) {
-                textarea = document.querySelector(selector);
-                if (textarea) break;
+            const textareaResult = findChatGPTTextarea();
+            if (textareaResult && textareaResult.textarea) {
+                textarea = textareaResult.textarea;
             }
         }
         
@@ -1002,27 +1103,95 @@ async function handleScanClick() {
     // For chat interfaces (ChatGPT, Gemini), only get text from input field
     let textToAnalyze = '';
     if (pageType === 'chatgpt' || pageType === 'gemini') {
-      // Try multiple selectors for textarea/input fields
+      // Enhanced selectors for ChatGPT/Gemini - try more specific ones first
       const textareaSelectors = [
+        // ChatGPT specific selectors
+        'textarea#prompt-textarea',
+        'textarea[data-id="root"]',
+        'textarea[tabindex="0"]',
+        'div[contenteditable="true"][data-id="root"]',
+        'div[contenteditable="true"][tabindex="0"]',
         'textarea[aria-label*="prompt"]',
+        'textarea[aria-label*="Message"]',
         'textarea[aria-label*="message"]',
         'textarea[placeholder*="prompt"]',
+        'textarea[placeholder*="Message"]',
         'textarea[placeholder*="message"]',
         'textarea[contenteditable="true"]',
         'div[contenteditable="true"][role="textbox"]',
-        'textarea'
+        'div[contenteditable="true"]',
+        // More generic selectors
+        'textarea',
+        'div[role="textbox"]'
       ];
       
       let textarea = null;
+      let foundSelector = null;
+      
       for (const selector of textareaSelectors) {
-        textarea = document.querySelector(selector);
-        if (textarea) break;
+        try {
+          const elements = document.querySelectorAll(selector);
+          // Try to find the one that's actually visible and has focus or is the input
+          for (const el of elements) {
+            const rect = el.getBoundingClientRect();
+            const isVisible = rect.width > 0 && rect.height > 0;
+            const isInput = el.tagName === 'TEXTAREA' || 
+                          (el.contentEditable === 'true' && el.getAttribute('role') === 'textbox') ||
+                          (el.contentEditable === 'true' && el.hasAttribute('data-id'));
+            
+            if (isVisible && isInput) {
+              textarea = el;
+              foundSelector = selector;
+              break;
+            }
+          }
+          
+          if (textarea) break;
+          
+          // Fallback: just use the first one if any found
+          if (elements.length > 0) {
+            textarea = elements[0];
+            foundSelector = selector;
+            break;
+          }
+        } catch (e) {
+          console.warn(`[PII Extension] Error with selector ${selector}:', e`);
+        }
       }
       
       if (textarea) {
-        textToAnalyze = textarea.value || textarea.textContent || '';
-        console.log(`[PII Extension] Extracted ${textToAnalyze.length} characters from input field only`);
+        // Try multiple ways to get text
+        textToAnalyze = textarea.value || 
+                       textarea.textContent || 
+                       textarea.innerText || 
+                       (textarea.querySelector ? textarea.querySelector('div')?.textContent : '') ||
+                       '';
+        
+        // For contenteditable divs, try to get text from child nodes
+        if (!textToAnalyze && textarea.contentEditable === 'true') {
+          const walker = document.createTreeWalker(
+            textarea,
+            NodeFilter.SHOW_TEXT,
+            null,
+            false
+          );
+          
+          let textNodes = [];
+          let node;
+          while (node = walker.nextNode()) {
+            textNodes.push(node.textContent);
+          }
+          textToAnalyze = textNodes.join('');
+        }
+        
+        console.log(`[PII Extension] Found textarea with selector: ${foundSelector}`);
+        console.log(`[PII Extension] Textarea tag: ${textarea.tagName}, contentEditable: ${textarea.contentEditable}`);
+        console.log(`[PII Extension] Extracted ${textToAnalyze.length} characters from input field`);
+        console.log(`[PII Extension] Text preview (first 100 chars): "${textToAnalyze.substring(0, 100)}"`);
       } else {
+        console.warn('[PII Extension] No textarea found with any selector');
+        console.warn('[PII Extension] Available textareas on page:', document.querySelectorAll('textarea').length);
+        console.warn('[PII Extension] Available contenteditable divs:', document.querySelectorAll('div[contenteditable="true"]').length);
         textToAnalyze = '';
       }
     } else {
@@ -1246,35 +1415,24 @@ function highlightPiiForChatGPT(entities) {
         const pageType = detectPageType();
         const isGemini = pageType === 'gemini';
         
-        // Try multiple selectors to find the input field
-        const textareaSelectors = [
-            'textarea[aria-label*="prompt"]',
-            'textarea[aria-label*="message"]',
-            'textarea[placeholder*="prompt"]',
-            'textarea[placeholder*="message"]',
-            'textarea[contenteditable="true"]',
-            'div[contenteditable="true"][role="textbox"]',
-            'textarea'
-        ];
+        // Use the enhanced textarea finder
+        const textareaResult = findChatGPTTextarea();
         
-        let textarea = null;
-        for (const selector of textareaSelectors) {
-            textarea = document.querySelector(selector);
-            if (textarea) {
-                console.log(`[PII Extension] Found input field with selector: ${selector}`);
-                break;
-            }
-        }
-        
-        if (!textarea) {
-            console.warn(`[PII Extension] ${isGemini ? 'Gemini' : 'ChatGPT'} input field not found`);
-            alert(`${isGemini ? 'Gemini' : 'ChatGPT'} input not found. Please make sure you're in the chat interface.`);
+        if (!textareaResult || !textareaResult.textarea) {
+            alert(`${isGemini ? 'Gemini' : 'ChatGPT'} input not found. Please make sure you're in the chat interface and have typed a message.`);
             return;
         }
         
-        // Get text from input field (handle both textarea.value and contenteditable divs)
-        const originalText = textarea.value || textarea.textContent || '';
-        if (!originalText.trim()) {
+        const textarea = textareaResult.textarea;
+        let originalText = textareaResult.text;
+        
+        console.log(`[PII Extension] Found input field with selector: ${textareaResult.selector}`);
+        
+        if (!originalText || !originalText.trim()) {
+            console.warn(`[PII Extension] No text found in ${isGemini ? 'Gemini' : 'ChatGPT'} input field`);
+            console.warn(`[PII Extension] Textarea value: "${textarea.value}"`);
+            console.warn(`[PII Extension] Textarea textContent: "${textarea.textContent}"`);
+            console.warn(`[PII Extension] Textarea innerText: "${textarea.innerText}"`);
             alert(`No text found in ${isGemini ? 'Gemini' : 'ChatGPT'} input. Please type your message in the input field first.`);
             return;
         }

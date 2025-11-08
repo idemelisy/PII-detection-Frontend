@@ -633,6 +633,38 @@ function getSimpleTextNodesIn(element) {
 // Clears all PII highlights from the document
 function clearHighlights(showAlert = true) {
     try {
+        const pageType = detectPageType();
+        const isChatGPTOrGemini = pageType === 'chatgpt' || pageType === 'gemini';
+        
+        // For ChatGPT/Gemini, clear textarea overlays
+        if (isChatGPTOrGemini) {
+            // Remove all textarea overlay highlights
+            document.querySelectorAll('.pii-textarea-overlay').forEach(el => {
+                if (el._updatePosition) {
+                    window.removeEventListener('scroll', el._updatePosition, true);
+                    window.removeEventListener('resize', el._updatePosition);
+                }
+                el.remove();
+            });
+            
+            // Remove any suggestion popups
+            document.querySelectorAll('.pii-suggestion-popup').forEach(popup => {
+                popup.remove();
+            });
+            
+            // Clear stored data
+            delete window.chatGPTOriginalText;
+            delete window.chatGPTFoundPII;
+            delete window.chatGPTTextarea;
+            
+            if (showAlert) {
+                alert("Highlights cleared.");
+            }
+            
+            console.log("[PII Extension] Cleared ChatGPT/Gemini highlights");
+            return;
+        }
+        
         // Clear regular highlights by replacing HTML
         const editor = findContentArea();
         let highlightedElements = [];
@@ -759,8 +791,8 @@ function acceptAllPII() {
         
         const pageType = detectPageType();
         
-        // CRITICAL: For ChatGPT, use special non-DOM approach
-        if (pageType === 'chatgpt') {
+        // CRITICAL: For ChatGPT/Gemini, use special non-DOM approach
+        if (pageType === 'chatgpt' || pageType === 'gemini') {
             acceptAllPIIForChatGPT();
             return;
         }
@@ -2186,6 +2218,7 @@ function rejectTextareaSuggestion(overlayElement, suggestionId, popup) {
 }
 
 // ChatGPT/Gemini-specific accept all function
+// Uses the new offset tracking system for accurate redaction
 function acceptAllPIIForChatGPT() {
     try {
         const pageType = detectPageType();
@@ -2217,54 +2250,76 @@ function acceptAllPIIForChatGPT() {
         }
         
         // Get current text from textarea (may have been modified)
-        let redactedText = textarea.value || textarea.textContent || window.chatGPTOriginalText || '';
+        const currentText = textarea.value || textarea.textContent || window.chatGPTOriginalText || '';
         
-        // Sort PII by position (reverse order to maintain indices when replacing)
-        const sortedPII = [...window.chatGPTFoundPII].sort((a, b) => b.start - a.start);
+        // Find actual positions of PII in current text (similar to highlighting logic)
+        // This ensures we redact the correct text even if it has been modified
+        const spans = [];
+        const lowerText = currentText.toLowerCase();
         
-        // Replace each PII with its redaction label (from end to start to maintain positions)
-        sortedPII.forEach(pii => {
-            const redactionLabel = getRedactionLabel(pii.type);
+        window.chatGPTFoundPII.forEach(pii => {
+            const piiValue = pii.value;
+            const lowerPiiValue = piiValue.toLowerCase();
             
-            // Verify the text at this position matches what we expect
-            const textAtPosition = redactedText.substring(pii.start, pii.end);
-            
-            if (textAtPosition === pii.value || textAtPosition.toLowerCase() === pii.value.toLowerCase()) {
-                // Offsets are correct, use them
-                redactedText = redactedText.substring(0, pii.start) + redactionLabel + redactedText.substring(pii.end);
-                console.log(`[PII Extension] Redacted "${pii.value}" at ${pii.start}-${pii.end}`);
-            } else {
-                // Offsets don't match, try to find the text
-                console.warn(`[PII Extension] Offset mismatch for "${pii.value}": expected at ${pii.start}-${pii.end}, found "${textAtPosition}"`);
+            // Find all occurrences of this PII in the current text
+            let searchIndex = 0;
+            while (true) {
+                const foundIndex = lowerText.indexOf(lowerPiiValue, searchIndex);
+                if (foundIndex === -1) break;
                 
-                // Escape special regex characters
-                const escapedPii = pii.value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                const regex = new RegExp(escapedPii, 'gi');
-                const match = redactedText.match(regex);
+                // Get the actual text at this position
+                const actualText = currentText.substring(foundIndex, foundIndex + piiValue.length);
                 
-                if (match && match.index !== undefined) {
-                    const foundIndex = match.index;
-                    const foundLength = match[0].length;
-                    redactedText = redactedText.substring(0, foundIndex) + redactionLabel + redactedText.substring(foundIndex + foundLength);
-                    console.log(`[PII Extension] Redacted "${pii.value}" at adjusted position: ${foundIndex}`);
-                } else {
-                    console.warn(`[PII Extension] Could not find "${pii.value}" in text, skipping`);
+                // Verify it matches and is not already redacted
+                if (actualText.toLowerCase() === lowerPiiValue && 
+                    !isRedactedText(currentText, foundIndex, foundIndex + piiValue.length)) {
+                    spans.push({
+                        start: foundIndex,
+                        end: foundIndex + piiValue.length,
+                        entity: {
+                            type: pii.type,
+                            value: actualText
+                        }
+                    });
                 }
+                
+                searchIndex = foundIndex + 1;
             }
         });
         
+        if (spans.length === 0) {
+            alert("No PII found to redact. The text may have been modified or already redacted.");
+            return;
+        }
+        
+        // Sort spans by start position (required for offset tracking)
+        spans.sort((a, b) => a.start - b.start);
+        
+        // Create mask function
+        const maskFor = (entity) => {
+            return getRedactionLabel(entity.type);
+        };
+        
+        // Use the new offset tracking system to redact all PII
+        // This ensures offsets are correctly maintained after each redaction
+        const result = redactPIIWithOffsetTracking(currentText, spans, maskFor);
+        
+        console.log(`[PII Extension] Redacted ${spans.length} PII items using offset tracking system`);
+        console.log(`[PII Extension] Original text length: ${currentText.length}, Redacted length: ${result.text.length}`);
+        
         // Update input field safely (works for both ChatGPT and Gemini)
-        const success = setChatGPTInputValue(redactedText, textarea);
+        const success = setChatGPTInputValue(result.text, textarea);
         if (success) {
             // Remove all overlays
             document.querySelectorAll('.pii-textarea-overlay').forEach(el => {
                 if (el._updatePosition) {
                     window.removeEventListener('scroll', el._updatePosition, true);
+                    window.removeEventListener('resize', el._updatePosition);
                 }
                 el.remove();
             });
             
-            alert(`Successfully redacted ${sortedPII.length} PII items. Your message is ready to send.`);
+            alert(`Successfully redacted ${spans.length} PII items. Your message is ready to send.`);
             
             // Clean up stored data
             delete window.chatGPTOriginalText;

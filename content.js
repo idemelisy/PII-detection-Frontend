@@ -376,6 +376,72 @@ function getRedactionLabel(piiType) {
     return labels[piiType] || '[REDACTED]';
 }
 
+// Check if a text position overlaps with already-redacted text
+function isRedactedText(text, start, end) {
+    // Check if the text at this position contains redaction labels
+    const textAtPosition = text.substring(start, end);
+    const redactionLabels = ['[NAME]', '[LOCATION]', '[EMAIL]', '[PHONE]', '[ORGANIZATION]', '[REDACTED]'];
+    
+    // Check if the position is within a redaction label
+    for (const label of redactionLabels) {
+        const labelIndex = text.indexOf(label);
+        if (labelIndex !== -1) {
+            const labelEnd = labelIndex + label.length;
+            // Check if our PII position overlaps with this redaction label
+            if ((start >= labelIndex && start < labelEnd) || 
+                (end > labelIndex && end <= labelEnd) ||
+                (start <= labelIndex && end >= labelEnd)) {
+                return true;
+            }
+        }
+    }
+    
+    // Also check if the text itself is a redaction label
+    return redactionLabels.some(label => textAtPosition.includes(label));
+}
+
+// Filter out PII entities that overlap with already-redacted text
+function filterRedactedPII(entities, text) {
+    return entities.filter(entity => {
+        // Check if this entity overlaps with any redaction label
+        const redactionLabels = ['[NAME]', '[LOCATION]', '[EMAIL]', '[PHONE]', '[ORGANIZATION]', '[REDACTED]'];
+        
+        // Find all redaction labels in the text
+        const redactionRanges = [];
+        for (const label of redactionLabels) {
+            let searchIndex = 0;
+            while (true) {
+                const labelIndex = text.indexOf(label, searchIndex);
+                if (labelIndex === -1) break;
+                redactionRanges.push({
+                    start: labelIndex,
+                    end: labelIndex + label.length
+                });
+                searchIndex = labelIndex + 1;
+            }
+        }
+        
+        // Check if entity overlaps with any redaction range
+        for (const range of redactionRanges) {
+            if ((entity.start >= range.start && entity.start < range.end) || 
+                (entity.end > range.start && entity.end <= range.end) ||
+                (entity.start <= range.start && entity.end >= range.end)) {
+                console.log(`[PII Extension] Filtering out PII "${entity.value}" at ${entity.start}-${entity.end} - overlaps with redaction label`);
+                return false;
+            }
+        }
+        
+        // Also check if the entity text itself contains a redaction label
+        const entityText = text.substring(entity.start, entity.end);
+        if (redactionLabels.some(label => entityText.includes(label))) {
+            console.log(`[PII Extension] Filtering out PII "${entity.value}" - contains redaction label`);
+            return false;
+        }
+        
+        return true;
+    });
+}
+
 // ChatGPT Integration Helper Functions
 // These functions safely update ChatGPT's input using React's synthetic event system
 
@@ -629,6 +695,25 @@ function clearHighlights(showAlert = true) {
             });
         } catch (error) {
             console.error("[PII Extension] Error clearing overlays:", error);
+        }
+        
+        // Clear textarea overlay highlights (for Gemini/ChatGPT)
+        try {
+            const textareaOverlays = document.querySelectorAll('.pii-textarea-overlay');
+            textareaOverlays.forEach((el, index) => {
+                try {
+                    if (el._updatePosition) {
+                        window.removeEventListener('scroll', el._updatePosition, true);
+                    }
+                    if (el.parentNode) {
+                        el.remove();
+                    }
+                } catch (error) {
+                    console.error(`[PII Extension] Error removing textarea overlay ${index}:`, error);
+                }
+            });
+        } catch (error) {
+            console.error("[PII Extension] Error clearing textarea overlays:", error);
         }
         
         // Clear any open suggestion popups safely
@@ -1114,7 +1199,7 @@ function highlightPiiInDocument(entities) {
     }
 }
 
-// ChatGPT/Gemini-specific highlighting that only works with input field
+// ChatGPT/Gemini-specific highlighting that shows inline highlights in the input field
 function highlightPiiForChatGPT(entities) {
     try {
         const pageType = detectPageType();
@@ -1155,14 +1240,62 @@ function highlightPiiForChatGPT(entities) {
         
         console.log(`[PII Extension] Analyzing ${isGemini ? 'Gemini' : 'ChatGPT'} input field text for PII (${originalText.length} characters)...`);
         
-        // Find PII in the text (only from input field, not conversation history)
+        // First, filter out any PII that overlaps with already-redacted text
+        const filteredEntities = filterRedactedPII(entities, originalText);
+        console.log(`[PII Extension] Filtered ${entities.length - filteredEntities.length} PII entities that overlap with redacted text`);
+        
+        // Find PII in the text by searching for each entity value in the current text
+        // This ensures we find the actual positions, even if text has changed
         const foundPII = [];
-        entities.forEach(entity => {
-            const lowerText = originalText.toLowerCase();
-            const lowerEntity = entity.value.toLowerCase();
+        filteredEntities.forEach(entity => {
+            const entityValue = entity.value;
+            const entityType = entity.type;
             
-            if (lowerText.includes(lowerEntity)) {
-                foundPII.push(entity);
+            // Search for this entity value in the current text
+            // Use case-insensitive search to handle variations
+            const lowerText = originalText.toLowerCase();
+            const lowerEntityValue = entityValue.toLowerCase();
+            
+            // Find all occurrences of this entity in the text
+            let searchIndex = 0;
+            const occurrences = [];
+            
+            while (true) {
+                const foundIndex = lowerText.indexOf(lowerEntityValue, searchIndex);
+                if (foundIndex === -1) break;
+                
+                // Get the actual text at this position
+                const actualText = originalText.substring(foundIndex, foundIndex + entityValue.length);
+                
+                // Verify it matches (case-insensitive)
+                if (actualText.toLowerCase() === lowerEntityValue) {
+                    // Check if this position is already redacted
+                    if (!isRedactedText(originalText, foundIndex, foundIndex + entityValue.length)) {
+                        occurrences.push({
+                            start: foundIndex,
+                            end: foundIndex + entityValue.length,
+                            value: actualText
+                        });
+                    }
+                }
+                
+                searchIndex = foundIndex + 1;
+            }
+            
+            // Add all found occurrences as separate PII entities
+            occurrences.forEach(occurrence => {
+                foundPII.push({
+                    type: entityType,
+                    start: occurrence.start,
+                    end: occurrence.end,
+                    value: occurrence.value,
+                    confidence: entity.confidence || 0.9
+                });
+                console.log(`[PII Extension] Found PII "${occurrence.value}" at ${occurrence.start}-${occurrence.end}`);
+            });
+            
+            if (occurrences.length === 0) {
+                console.warn(`[PII Extension] Could not find PII "${entityValue}" in current text (may be redacted or modified)`);
             }
         });
         
@@ -1174,27 +1307,882 @@ function highlightPiiForChatGPT(entities) {
         // Store the original text and PII info for later use
         window.chatGPTOriginalText = originalText;
         window.chatGPTFoundPII = foundPII;
-        window.chatGPTTextarea = textarea; // Store reference to the input field
+        window.chatGPTTextarea = textarea;
         
-        // Show summary without highlighting
-        const piiSummary = foundPII.map(pii => `${pii.type}: "${pii.value}"`).join('\n');
-        const userConfirm = confirm(
-            `Found ${foundPII.length} PII items in your input field:\n\n${piiSummary}\n\n` +
-            `Click OK to use the "Accept All" button to redact them, or Cancel to review individual items.`
-        );
+        // Create inline overlay highlights for each PII item
+        createInlineHighlightsForTextarea(textarea, foundPII, originalText);
         
-        if (userConfirm) {
-            // Auto-accept all PII
-            acceptAllPIIForChatGPT();
-        } else {
-            alert("Use the extension buttons to manage PII redaction.");
-        }
+        // Show info message
+        alert(`Found ${foundPII.length} PII items in your input. Click any yellow highlight to accept or reject individually.`);
         
     } catch (error) {
         console.error("[PII Extension] Error in chat interface PII analysis:", error);
         const pageType = detectPageType();
         alert(`Error analyzing ${pageType === 'gemini' ? 'Gemini' : 'ChatGPT'} text. Please try again.`);
     }
+}
+
+// NEW ROBUST HIGHLIGHTING SYSTEM
+// Creates accurate highlights by finding actual text positions and handling multi-line text properly
+function createInlineHighlightsForTextarea(textarea, entities, text) {
+    // Remove any existing highlights first
+    document.querySelectorAll('.pii-textarea-overlay').forEach(el => {
+        if (el._updatePosition) {
+            window.removeEventListener('scroll', el._updatePosition, true);
+            window.removeEventListener('resize', el._updatePosition);
+        }
+        el.remove();
+    });
+    
+    const textareaRect = textarea.getBoundingClientRect();
+    const textareaStyle = window.getComputedStyle(textarea);
+    const lineHeight = parseFloat(textareaStyle.lineHeight) || parseFloat(textareaStyle.fontSize) * 1.2;
+    
+    // Sort entities by position
+    const sortedEntities = entities.sort((a, b) => a.start - b.start);
+    
+    sortedEntities.forEach((entity, index) => {
+        try {
+            const entityText = text.substring(entity.start, entity.end);
+            
+            // Use new robust positioning method
+            const lineSegments = getTextLineSegments(textarea, text, entity.start, entity.end, textareaRect, textareaStyle);
+            
+            if (lineSegments.length === 0) {
+                console.warn(`[PII Extension] Could not find line segments for "${entity.value}"`);
+                return;
+            }
+            
+            // Create a highlight overlay for each line segment
+            // This ensures accurate highlighting even for multi-line text
+            lineSegments.forEach((segment, segIndex) => {
+                const overlay = createHighlightOverlay(segment, entity, textareaRect, textareaStyle, segIndex === 0);
+                
+                // Store reference to entity for click handling
+                overlay._entity = entity;
+                overlay._allSegments = lineSegments;
+                overlay._segmentIndex = segIndex;
+                
+                document.body.appendChild(overlay);
+                
+                // Setup position update handler
+                setupOverlayPositionUpdate(overlay, textarea, entity, text, textareaRect, textareaStyle);
+            });
+            
+            console.log(`[PII Extension] Created ${lineSegments.length} overlay(s) for "${entity.value}"`);
+        } catch (error) {
+            console.error(`[PII Extension] Error creating overlay for entity ${index}:`, error);
+        }
+    });
+    
+    console.log(`[PII Extension] Created highlights for ${sortedEntities.length} entities`);
+}
+
+// Get line segments for text that may wrap across multiple lines
+// Uses precise Range API to get exact character positions
+// Returns array of {left, top, width, height} for each line segment
+function getTextLineSegments(textarea, fullText, start, end, textareaRect, textareaStyle) {
+    const segments = [];
+    
+    // Validate indices
+    if (start < 0 || end < start || end > fullText.length) {
+        console.warn(`[PII Extension] Invalid indices: start=${start}, end=${end}, textLength=${fullText.length}`);
+        return segments;
+    }
+    
+    // Create a perfect mirror of the textarea
+    const mirror = createTextareaMirror(textarea, textareaRect, textareaStyle);
+    document.body.appendChild(mirror);
+    
+    try {
+        const textBefore = fullText.substring(0, start);
+        const entityText = fullText.substring(start, end);
+        const textAfter = fullText.substring(end);
+        
+        // Build mirror content with text nodes
+        mirror.innerHTML = '';
+        const beforeNode = textBefore ? document.createTextNode(textBefore) : null;
+        const entityNode = document.createTextNode(entityText);
+        const afterNode = textAfter ? document.createTextNode(textAfter) : null;
+        
+        if (beforeNode) mirror.appendChild(beforeNode);
+        mirror.appendChild(entityNode);
+        if (afterNode) mirror.appendChild(afterNode);
+        
+        // Force layout calculation
+        void mirror.offsetHeight;
+        
+        // Use Range API to get precise positions
+        const range = document.createRange();
+        const fontSize = parseFloat(textareaStyle.fontSize) || 14;
+        const lineHeightValue = parseFloat(textareaStyle.lineHeight) || fontSize * 1.2;
+        
+        try {
+            // Set range to exactly cover the entity text
+            range.setStart(entityNode, 0);
+            range.setEnd(entityNode, entityText.length);
+            
+            // Get all client rects (one per line for wrapped text)
+            const rangeRects = range.getClientRects();
+            
+            if (rangeRects.length === 0) {
+                // Fallback: use bounding rect
+                const boundingRect = range.getBoundingClientRect();
+                if (boundingRect.width > 0 && boundingRect.height > 0) {
+                    segments.push({
+                        left: boundingRect.left,
+                        top: boundingRect.top,
+                        width: boundingRect.width,
+                        height: boundingRect.height
+                    });
+                }
+            } else {
+                // Process each rect (each represents a line segment)
+                for (let i = 0; i < rangeRects.length; i++) {
+                    const rect = rangeRects[i];
+                    
+                    // Only add valid rects
+                    if (rect.width > 0 && rect.height > 0) {
+                        segments.push({
+                            left: rect.left,
+                            top: rect.top,
+                            width: rect.width,
+                            height: rect.height
+                        });
+                    }
+                }
+                
+                // If we got multiple rects but they're on the same line, merge them
+                if (segments.length > 1) {
+                    const merged = [];
+                    let current = null;
+                    
+                    segments.forEach(seg => {
+                        if (!current || Math.abs(seg.top - current.top) > lineHeightValue * 0.3) {
+                            // New line
+                            if (current) merged.push(current);
+                            current = { ...seg };
+                        } else {
+                            // Same line - extend width
+                            current.width = seg.left + seg.width - current.left;
+                            current.height = Math.max(current.height, seg.height);
+                        }
+                    });
+                    
+                    if (current) merged.push(current);
+                    return merged;
+                }
+            }
+        } catch (e) {
+            console.warn('[PII Extension] Range API error, using fallback:', e);
+            // Fallback: use entity node's bounding rect
+            const entityRect = entityNode.parentElement ? 
+                entityNode.parentElement.getBoundingClientRect() : 
+                mirror.getBoundingClientRect();
+            
+            if (entityRect.width > 0) {
+                segments.push({
+                    left: entityRect.left,
+                    top: entityRect.top,
+                    width: entityRect.width,
+                    height: entityRect.height || lineHeightValue
+                });
+            }
+        }
+        
+    } finally {
+        // Clean up mirror
+        try {
+            document.body.removeChild(mirror);
+        } catch (e) {
+            console.warn('[PII Extension] Error removing mirror:', e);
+        }
+    }
+    
+    return segments;
+}
+
+// Create a perfect mirror of the textarea for measurement
+function createTextareaMirror(textarea, textareaRect, textareaStyle) {
+    const mirror = document.createElement('div');
+    mirror.style.position = 'fixed';
+    mirror.style.visibility = 'hidden';
+    mirror.style.whiteSpace = 'pre-wrap';
+    mirror.style.wordWrap = 'break-word';
+    mirror.style.wordBreak = textareaStyle.wordBreak || 'normal';
+    mirror.style.fontSize = textareaStyle.fontSize;
+    mirror.style.fontFamily = textareaStyle.fontFamily;
+    mirror.style.fontWeight = textareaStyle.fontWeight;
+    mirror.style.fontStyle = textareaStyle.fontStyle;
+    mirror.style.letterSpacing = textareaStyle.letterSpacing;
+    mirror.style.lineHeight = textareaStyle.lineHeight;
+    mirror.style.width = textareaRect.width + 'px';
+    mirror.style.padding = textareaStyle.padding;
+    mirror.style.border = textareaStyle.border;
+    mirror.style.boxSizing = 'border-box';
+    mirror.style.overflow = 'visible';
+    mirror.style.left = textareaRect.left + 'px';
+    mirror.style.top = textareaRect.top + 'px';
+    mirror.style.zIndex = '-9999';
+    return mirror;
+}
+
+// Create a single highlight overlay element
+function createHighlightOverlay(segment, entity, textareaRect, textareaStyle, isFirstSegment) {
+    const overlay = document.createElement('div');
+    overlay.className = 'pii-textarea-overlay';
+    overlay.setAttribute('data-pii-type', entity.type);
+    overlay.setAttribute('data-pii-value', entity.value);
+    overlay.setAttribute('data-pii-start', entity.start);
+    overlay.setAttribute('data-pii-end', entity.end);
+    overlay.setAttribute('data-suggestion-id', generateSuggestionId());
+    
+    // Ensure segment is within textarea bounds
+    let left = Math.max(segment.left, textareaRect.left);
+    let top = Math.max(segment.top, textareaRect.top);
+    let width = Math.min(segment.width, textareaRect.right - left);
+    let height = Math.max(segment.height, 16);
+    
+    // Ensure minimum dimensions
+    width = Math.max(width, 20);
+    
+    overlay.style.position = 'fixed';
+    overlay.style.left = left + 'px';
+    overlay.style.top = top + 'px';
+    overlay.style.width = width + 'px';
+    overlay.style.height = height + 'px';
+    overlay.style.backgroundColor = 'rgba(251, 191, 36, 0.6)';
+    overlay.style.border = '2px solid #F59E0B';
+    overlay.style.borderRadius = '3px';
+    overlay.style.pointerEvents = 'auto';
+    overlay.style.cursor = 'pointer';
+    overlay.style.zIndex = '999999';
+    overlay.style.boxSizing = 'border-box';
+    overlay.style.transition = 'all 0.2s ease';
+    overlay.style.overflow = 'hidden';
+    
+    // Hover effects
+    overlay.onmouseenter = () => {
+        overlay.style.backgroundColor = 'rgba(251, 191, 36, 0.9)';
+    };
+    overlay.onmouseleave = () => {
+        overlay.style.backgroundColor = 'rgba(251, 191, 36, 0.6)';
+    };
+    
+    // Click handler - use the first segment's entity for the popup
+    overlay.onclick = (event) => {
+        event.stopPropagation();
+        event.preventDefault();
+        if (isFirstSegment && overlay._entity) {
+            showTextareaSuggestionPopup(overlay, overlay._entity);
+        }
+    };
+    
+    overlay.title = `Click to review ${entity.type}: "${entity.value}"`;
+    
+    return overlay;
+}
+
+// ============================================================================
+// OFFSET TRACKING SYSTEM FOR PII REDACTION
+// ============================================================================
+
+/**
+ * Option A: Replace spans in descending order (from end to start)
+ * This prevents earlier spans' indices from shifting when later ones are replaced.
+ * 
+ * @param {string} text - Original text string
+ * @param {Array} spans - Array of {start, end, entity} objects with original offsets
+ * @param {Function} maskFor - Callback that returns mask string for given entity
+ * @returns {Object} {text: redactedText, updatedSpans: array with new offsets}
+ */
+function redactPII_DescendingOrder(text, spans, maskFor) {
+    // Sort spans by start position in descending order
+    const sortedSpans = [...spans].sort((a, b) => b.start - a.start);
+    
+    let redactedText = text;
+    const updatedSpans = [];
+    
+    // Track offset adjustments for each span
+    const adjustments = new Map();
+    
+    sortedSpans.forEach(span => {
+        const mask = maskFor(span.entity);
+        const originalLength = span.end - span.start;
+        const lengthDiff = mask.length - originalLength;
+        
+        // Apply redaction
+        redactedText = redactedText.substring(0, span.start) + mask + redactedText.substring(span.end);
+        
+        // Calculate new offsets for this span
+        const newStart = span.start;
+        const newEnd = span.start + mask.length;
+        
+        updatedSpans.push({
+            start: newStart,
+            end: newEnd,
+            entity: span.entity,
+            maskedText: mask
+        });
+        
+        // Store adjustment for spans that come before this one
+        adjustments.set(span.start, lengthDiff);
+    });
+    
+    // Update offsets for all spans based on adjustments
+    updatedSpans.forEach(span => {
+        let adjustment = 0;
+        adjustments.forEach((diff, position) => {
+            if (position > span.start) {
+                adjustment += diff;
+            }
+        });
+        
+        if (adjustment !== 0) {
+            span.start += adjustment;
+            span.end += adjustment;
+        }
+    });
+    
+    // Sort updated spans back to ascending order
+    updatedSpans.sort((a, b) => a.start - b.start);
+    
+    return {
+        text: redactedText,
+        updatedSpans: updatedSpans
+    };
+}
+
+/**
+ * Option B: Replace spans in ascending order with delta tracking
+ * Tracks cumulative length difference as we process each span.
+ * 
+ * @param {string} text - Original text string
+ * @param {Array} spans - Array of {start, end, entity} objects with original offsets
+ * @param {Function} maskFor - Callback that returns mask string for given entity
+ * @returns {Object} {text: redactedText, updatedSpans: array with new offsets}
+ */
+function redactPII_AscendingOrder(text, spans, maskFor) {
+    // Sort spans by start position in ascending order
+    const sortedSpans = [...spans].sort((a, b) => a.start - b.start);
+    
+    let redactedText = text;
+    let cumulativeDelta = 0; // Track cumulative length difference
+    const updatedSpans = [];
+    
+    sortedSpans.forEach(span => {
+        const mask = maskFor(span.entity);
+        const originalLength = span.end - span.start;
+        const lengthDiff = mask.length - originalLength;
+        
+        // Adjust start/end positions based on previous redactions
+        const adjustedStart = span.start + cumulativeDelta;
+        const adjustedEnd = span.end + cumulativeDelta;
+        
+        // Apply redaction at adjusted position
+        redactedText = redactedText.substring(0, adjustedStart) + 
+                      mask + 
+                      redactedText.substring(adjustedEnd);
+        
+        // Calculate new offsets
+        const newStart = adjustedStart;
+        const newEnd = adjustedStart + mask.length;
+        
+        updatedSpans.push({
+            start: newStart,
+            end: newEnd,
+            entity: span.entity,
+            maskedText: mask
+        });
+        
+        // Update cumulative delta for next iterations
+        cumulativeDelta += lengthDiff;
+    });
+    
+    return {
+        text: redactedText,
+        updatedSpans: updatedSpans
+    };
+}
+
+/**
+ * Main redaction function - uses Option B (ascending order) by default
+ * as it's more intuitive and easier to understand.
+ */
+function redactPIIWithOffsetTracking(text, spans, maskFor) {
+    return redactPII_AscendingOrder(text, spans, maskFor);
+}
+
+// ============================================================================
+// END OFFSET TRACKING SYSTEM
+// ============================================================================
+
+// Setup position update handler for overlay
+function setupOverlayPositionUpdate(overlay, textarea, entity, originalText, textareaRect, textareaStyle) {
+    const updatePosition = () => {
+        try {
+            const currentText = textarea.value || textarea.textContent || originalText;
+            const newRect = textarea.getBoundingClientRect();
+            
+            // Recalculate segments if text hasn't changed much
+            if (Math.abs(currentText.length - originalText.length) < 10) {
+                const segments = getTextLineSegments(textarea, currentText, entity.start, entity.end, newRect, textareaStyle);
+                
+                if (segments.length > 0 && overlay._segmentIndex < segments.length) {
+                    const segment = segments[overlay._segmentIndex];
+                    
+                    let left = Math.max(segment.left, newRect.left);
+                    let top = Math.max(segment.top, newRect.top);
+                    let width = Math.min(segment.width, newRect.right - left);
+                    let height = Math.max(segment.height, 16);
+                    
+                    width = Math.max(width, 20);
+                    
+                    overlay.style.left = left + 'px';
+                    overlay.style.top = top + 'px';
+                    overlay.style.width = width + 'px';
+                    overlay.style.height = height + 'px';
+                }
+            }
+        } catch (e) {
+            console.warn('[PII Extension] Error updating overlay position:', e);
+        }
+    };
+    
+    window.addEventListener('scroll', updatePosition, true);
+    window.addEventListener('resize', updatePosition);
+    overlay._updatePosition = updatePosition;
+}
+
+// Helper function to calculate text position using a mirror element with accurate word wrapping
+function calculateTextPosition(textarea, fullText, start, end, textareaRect, textareaStyle) {
+    const paddingLeft = parseFloat(textareaStyle.paddingLeft) || 0;
+    const paddingTop = parseFloat(textareaStyle.paddingTop) || 0;
+    const fontSize = parseFloat(textareaStyle.fontSize) || 14;
+    const fontFamily = textareaStyle.fontFamily;
+    const lineHeight = parseFloat(textareaStyle.lineHeight) || fontSize * 1.2;
+    const borderWidth = parseFloat(textareaStyle.borderLeftWidth) || 0;
+    
+    // Validate indices
+    if (start < 0 || end < start || end > fullText.length) {
+        console.warn(`[PII Extension] Invalid text indices: start=${start}, end=${end}, textLength=${fullText.length}`);
+        return { left: 0, top: 0, width: 0, height: lineHeight };
+    }
+    
+    // Create a mirror div with same styling as textarea, positioned exactly like textarea
+    const mirror = document.createElement('div');
+    mirror.style.position = 'fixed';
+    mirror.style.visibility = 'hidden';
+    mirror.style.whiteSpace = 'pre-wrap';
+    mirror.style.wordWrap = 'break-word';
+    mirror.style.wordBreak = textareaStyle.wordBreak || 'normal';
+    mirror.style.fontSize = fontSize + 'px';
+    mirror.style.fontFamily = fontFamily;
+    mirror.style.fontWeight = textareaStyle.fontWeight;
+    mirror.style.fontStyle = textareaStyle.fontStyle;
+    mirror.style.letterSpacing = textareaStyle.letterSpacing;
+    mirror.style.lineHeight = textareaStyle.lineHeight;
+    mirror.style.width = textareaRect.width + 'px';
+    mirror.style.padding = textareaStyle.padding;
+    mirror.style.border = textareaStyle.border;
+    mirror.style.boxSizing = 'border-box';
+    mirror.style.overflow = 'hidden';
+    mirror.style.left = textareaRect.left + 'px';
+    mirror.style.top = textareaRect.top + 'px';
+    mirror.style.zIndex = '-9999'; // Ensure it's behind everything
+    document.body.appendChild(mirror);
+    
+    const textBefore = fullText.substring(0, start);
+    const entityText = fullText.substring(start, end);
+    const textAfter = fullText.substring(end);
+    
+    // Use marker spans to measure exact positions
+    const startMarker = document.createElement('span');
+    startMarker.id = 'pii-start-marker-' + Date.now();
+    startMarker.style.display = 'inline';
+    startMarker.style.width = '0';
+    startMarker.style.height = '0';
+    startMarker.style.overflow = 'hidden';
+    
+    const endMarker = document.createElement('span');
+    endMarker.id = 'pii-end-marker-' + Date.now();
+    endMarker.style.display = 'inline';
+    endMarker.style.width = '0';
+    endMarker.style.height = '0';
+    endMarker.style.overflow = 'hidden';
+    
+    // Build mirror content with markers - use text nodes to preserve exact formatting
+    mirror.innerHTML = '';
+    if (textBefore) {
+        mirror.appendChild(document.createTextNode(textBefore));
+    }
+    mirror.appendChild(startMarker);
+    if (entityText) {
+        mirror.appendChild(document.createTextNode(entityText));
+    }
+    mirror.appendChild(endMarker);
+    if (textAfter) {
+        mirror.appendChild(document.createTextNode(textAfter));
+    }
+    
+    // Force a reflow to ensure layout is calculated
+    void mirror.offsetHeight;
+    
+    // Get positions of markers
+    const startRect = startMarker.getBoundingClientRect();
+    const endRect = endMarker.getBoundingClientRect();
+    
+    // Check if text spans multiple lines (wrapped text)
+    // Compare Y positions - if they differ significantly, text wraps
+    const lineHeightValue = parseFloat(textareaStyle.lineHeight) || fontSize * 1.2;
+    const spansMultipleLines = Math.abs(startRect.top - endRect.top) > lineHeightValue * 0.3;
+    
+    let left, top, width, height;
+    
+    if (spansMultipleLines) {
+        // Text wraps across multiple lines
+        // For multi-line text, we need to be more careful with width calculation
+        // The issue is that a single rectangle can't perfectly represent wrapped text
+        // So we'll calculate a reasonable bounding box
+        
+        left = startRect.left;
+        top = startRect.top;
+        
+        // Calculate the number of lines
+        const numLines = Math.ceil((endRect.bottom - startRect.top) / lineHeightValue);
+        
+        // For multi-line text, calculate width more carefully
+        // First line: from start to right edge (or to end if it fits on one line)
+        // Last line: from left edge to end
+        const firstLineRemaining = textareaRect.right - startRect.left;
+        const lastLineWidth = endRect.right - textareaRect.left;
+        
+        if (numLines === 2) {
+            // Two lines: use the maximum width needed
+            // But don't make it wider than necessary
+            width = Math.max(firstLineRemaining, lastLineWidth);
+            // Cap it at textarea width to avoid over-extending
+            width = Math.min(width, textareaRect.width);
+        } else {
+            // Three or more lines: middle lines need full width
+            // But we still need to cover first and last lines properly
+            width = textareaRect.width;
+            // But if the calculated width from markers is reasonable, use that instead
+            const markerWidth = endRect.right - startRect.left;
+            if (markerWidth < textareaRect.width * 1.5 && markerWidth > 0) {
+                width = Math.max(markerWidth, Math.max(firstLineRemaining, lastLineWidth));
+            }
+        }
+        
+        // Height spans from first line top to last line bottom
+        height = endRect.bottom - startRect.top;
+        
+        // Ensure minimum dimensions
+        if (height < lineHeightValue) {
+            height = lineHeightValue;
+        }
+        if (width <= 0) {
+            width = 20; // Minimum width
+        }
+        
+        console.log(`[PII Extension] Multi-line text "${entityText.substring(0, 30)}": ${numLines} lines, width=${width.toFixed(1)}, height=${height.toFixed(1)}`);
+    } else {
+        // Single line - use marker positions directly
+        left = startRect.left;
+        top = startRect.top;
+        width = Math.max(endRect.right - startRect.left, 10);
+        height = Math.max(endRect.bottom - startRect.top, lineHeight);
+    }
+    
+    // Ensure width is not negative or zero
+    if (width <= 0) {
+        // Fallback: estimate width based on text length
+        const canvas = document.createElement('canvas');
+        const context = canvas.getContext('2d');
+        context.font = `${fontSize}px ${fontFamily}`;
+        width = Math.max(context.measureText(entityText).width, 20);
+    }
+    
+    // Ensure height is reasonable (for multi-line, should be at least lineHeight)
+    if (height <= 0) {
+        height = spansMultipleLines ? lineHeight * Math.ceil(entityText.length / 50) : lineHeight;
+    }
+    
+    // Clean up
+    try {
+        document.body.removeChild(mirror);
+    } catch (e) {
+        console.warn('[PII Extension] Error removing mirror element:', e);
+    }
+    
+    return { left, top, width, height };
+}
+
+// Helper function to find text node at a specific character position
+function findTextNodeAtPosition(element, charPosition) {
+    let currentPos = 0;
+    const walker = document.createTreeWalker(
+        element,
+        NodeFilter.SHOW_TEXT,
+        null
+    );
+    
+    let node;
+    while (node = walker.nextNode()) {
+        const nodeLength = node.textContent.length;
+        if (currentPos + nodeLength >= charPosition) {
+            return node;
+        }
+        currentPos += nodeLength;
+    }
+    return null;
+}
+
+// Show suggestion popup for textarea overlay highlights
+function showTextareaSuggestionPopup(overlayElement, entity) {
+    // Remove any existing popups
+    document.querySelectorAll(`.${SUGGESTION_POPUP_CLASS}`).forEach(popup => popup.remove());
+    
+    const piiValue = overlayElement.getAttribute('data-pii-value');
+    const piiType = overlayElement.getAttribute('data-pii-type');
+    const suggestionId = overlayElement.getAttribute('data-suggestion-id');
+    
+    // Create popup
+    const popup = document.createElement('div');
+    popup.className = SUGGESTION_POPUP_CLASS;
+    
+    // Position popup near the overlay
+    const rect = overlayElement.getBoundingClientRect();
+    popup.style.left = Math.min(rect.left, window.innerWidth - 440) + 'px';
+    popup.style.top = (rect.bottom + 10) + 'px';
+    
+    // Create popup content
+    popup.innerHTML = `
+        <div style="margin-bottom: 12px;">
+            <strong>PII Detected</strong>
+        </div>
+        <div style="margin-bottom: 8px;">
+            <strong>Type:</strong> ${piiType}
+        </div>
+        <div style="margin-bottom: 8px;">
+            <strong>Value:</strong> "<span class="pii-value-highlight">${piiValue}</span>"
+        </div>
+        <div style="margin-bottom: 16px;">
+            <strong>Will become:</strong> "<span class="pii-redaction-preview">${getRedactionLabel(piiType)}</span>"
+        </div>
+        <div style="display: flex; gap: 10px; justify-content: flex-end;">
+            <button id="reject-textarea-btn">✕ Reject</button>
+            <button id="accept-textarea-btn">✓ Accept</button>
+        </div>
+    `;
+    
+    document.body.appendChild(popup);
+    
+    // Add event listeners
+    popup.querySelector('#accept-textarea-btn').onclick = () => acceptTextareaSuggestion(overlayElement, entity, suggestionId, popup);
+    popup.querySelector('#reject-textarea-btn').onclick = () => rejectTextareaSuggestion(overlayElement, suggestionId, popup);
+    
+    // Close popup when clicking outside
+    const closePopup = (event) => {
+        if (!popup.contains(event.target) && !overlayElement.contains(event.target)) {
+            popup.remove();
+            document.removeEventListener('click', closePopup);
+        }
+    };
+    
+    setTimeout(() => {
+        document.addEventListener('click', closePopup);
+    }, 100);
+}
+
+// Accept individual PII suggestion in textarea
+function acceptTextareaSuggestion(overlayElement, entity, suggestionId, popup) {
+    const textarea = window.chatGPTTextarea;
+    if (!textarea) {
+        alert("Input field not found. Please try scanning again.");
+        popup.remove();
+        return;
+    }
+    
+    // Get current text from textarea (may have been modified)
+    const currentText = textarea.value || textarea.textContent || '';
+    const piiValue = overlayElement.getAttribute('data-pii-value');
+    const piiType = overlayElement.getAttribute('data-pii-type');
+    const redactionLabel = getRedactionLabel(piiType);
+    
+    // Get the stored start/end positions
+    const start = parseInt(overlayElement.getAttribute('data-pii-start'));
+    const end = parseInt(overlayElement.getAttribute('data-pii-end'));
+    
+    // Verify the text at this position matches what we expect
+    const textAtPosition = currentText.substring(start, end);
+    console.log(`[PII Extension] Verifying redaction: expected "${piiValue}" at ${start}-${end}, found "${textAtPosition}"`);
+    
+    // Replace using offsets - but verify first
+    let newText;
+    const actualTextAtOffset = currentText.substring(start, end);
+    
+    // Check if the text at the offset matches what we expect
+    if (actualTextAtOffset === piiValue || actualTextAtOffset.toLowerCase() === piiValue.toLowerCase()) {
+        // Offsets are correct, use them directly
+        newText = currentText.substring(0, start) + redactionLabel + currentText.substring(end);
+        console.log(`[PII Extension] Redacting using verified offsets: ${start}-${end}`);
+    } else {
+        // Offsets don't match - the text may have been modified
+        // Try to find the exact PII value in the text
+        console.warn(`[PII Extension] Offset mismatch. Searching for "${piiValue}" in text...`);
+        
+        // Escape special regex characters
+        const escapedPii = piiValue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(escapedPii, 'gi');
+        const matches = [...currentText.matchAll(regex)];
+        
+        if (matches.length > 0) {
+            // Find the match closest to the expected position
+            let bestMatch = matches[0];
+            let minDistance = Math.abs(matches[0].index - start);
+            
+            for (const match of matches) {
+                const distance = Math.abs(match.index - start);
+                if (distance < minDistance) {
+                    minDistance = distance;
+                    bestMatch = match;
+                }
+            }
+            
+            const foundIndex = bestMatch.index;
+            const foundLength = bestMatch[0].length;
+            console.log(`[PII Extension] Found PII at adjusted position: ${foundIndex} (expected ${start}), length: ${foundLength}`);
+            
+            newText = currentText.substring(0, foundIndex) + redactionLabel + currentText.substring(foundIndex + foundLength);
+            
+            // Update the stored offsets for this redaction
+            const adjustedStart = foundIndex;
+            const adjustedEnd = foundIndex + foundLength;
+            
+            // Update the overlay's stored offsets for recalculation
+            overlayElement.setAttribute('data-pii-start', adjustedStart);
+            overlayElement.setAttribute('data-pii-end', adjustedEnd);
+        } else {
+            console.error(`[PII Extension] Could not find PII "${piiValue}" in current text`);
+            alert(`Error: Could not find "${piiValue}" in the text. The text may have been modified.`);
+            popup.remove();
+            return;
+        }
+    }
+    
+    // Update the stored original text
+    window.chatGPTOriginalText = newText;
+    
+    // Update the textarea
+    if (textarea.tagName === 'TEXTAREA') {
+        textarea.value = newText;
+    } else {
+        textarea.textContent = newText;
+    }
+    
+    // Trigger events
+    const inputEvent = new Event("input", { bubbles: true });
+    textarea.dispatchEvent(inputEvent);
+    const changeEvent = new Event("change", { bubbles: true });
+    textarea.dispatchEvent(changeEvent);
+    
+    // Remove this overlay and all overlays
+    document.querySelectorAll('.pii-textarea-overlay').forEach(el => {
+        if (el._updatePosition) {
+            window.removeEventListener('scroll', el._updatePosition, true);
+            window.removeEventListener('resize', el._updatePosition);
+        }
+        el.remove();
+    });
+    
+    // Get the actual redaction position (may have been adjusted)
+    const actualStart = parseInt(overlayElement.getAttribute('data-pii-start'));
+    const actualEnd = parseInt(overlayElement.getAttribute('data-pii-end'));
+    
+    // Remove this PII from the list
+    window.chatGPTFoundPII = window.chatGPTFoundPII.filter(p => 
+        !(p.start === start && p.end === end && p.value === piiValue)
+    );
+    
+    // Recalculate offsets for all remaining PII entities based on new text
+    // After redaction, offsets shift by the difference between original and redacted length
+    const redactionLengthDiff = redactionLabel.length - (actualEnd - actualStart);
+    const redactionPoint = newText.indexOf(redactionLabel);
+    
+    const updatedPII = [];
+    window.chatGPTFoundPII.forEach(pii => {
+        let newStart = pii.start;
+        let newEnd = pii.end;
+        
+        // If this PII comes after the redaction point, adjust its offsets
+        if (pii.start >= actualEnd) {
+            newStart = pii.start + redactionLengthDiff;
+            newEnd = pii.end + redactionLengthDiff;
+        } else if (pii.end > actualStart && pii.start < actualEnd) {
+            // This PII overlaps with the redacted one - skip it (shouldn't happen, but safety check)
+            console.warn(`[PII Extension] Skipping overlapping PII: ${pii.value}`);
+            return;
+        }
+        
+        // Verify the PII still exists at the new position
+        const textAtNewPosition = newText.substring(newStart, newEnd);
+        if (textAtNewPosition === pii.value || textAtNewPosition.toLowerCase() === pii.value.toLowerCase()) {
+            updatedPII.push({
+                ...pii,
+                start: newStart,
+                end: newEnd
+            });
+        } else {
+            // Try to find it by value
+            const lowerNewText = newText.toLowerCase();
+            const lowerPiiValue = pii.value.toLowerCase();
+            const foundIndex = lowerNewText.indexOf(lowerPiiValue, Math.max(0, newStart - 10));
+            
+            if (foundIndex !== -1) {
+                updatedPII.push({
+                    ...pii,
+                    start: foundIndex,
+                    end: foundIndex + pii.value.length
+                });
+                console.log(`[PII Extension] Recalculated PII "${pii.value}" to position ${foundIndex}`);
+            } else {
+                console.warn(`[PII Extension] Could not find remaining PII "${pii.value}" after redaction`);
+            }
+        }
+    });
+    
+    window.chatGPTFoundPII = updatedPII;
+    
+    // Recreate highlights for remaining PII with updated offsets
+    if (window.chatGPTFoundPII.length > 0) {
+        createInlineHighlightsForTextarea(textarea, window.chatGPTFoundPII, newText);
+    }
+    
+    popup.remove();
+    console.log(`[PII Extension] Accepted and redacted: ${piiType} "${piiValue}" -> "${redactionLabel}"`);
+}
+
+// Reject individual PII suggestion in textarea
+function rejectTextareaSuggestion(overlayElement, suggestionId, popup) {
+    const piiValue = overlayElement.getAttribute('data-pii-value');
+    const piiType = overlayElement.getAttribute('data-pii-type');
+    const start = parseInt(overlayElement.getAttribute('data-pii-start'));
+    const end = parseInt(overlayElement.getAttribute('data-pii-end'));
+    
+    // Remove this overlay
+    if (overlayElement._updatePosition) {
+        window.removeEventListener('scroll', overlayElement._updatePosition, true);
+    }
+    overlayElement.remove();
+    
+    // Remove this PII from the list
+    window.chatGPTFoundPII = window.chatGPTFoundPII.filter(p => 
+        !(p.start === start && p.end === end && p.value === piiValue)
+    );
+    
+    popup.remove();
+    console.log(`[PII Extension] Rejected: ${piiType} "${piiValue}"`);
 }
 
 // ChatGPT/Gemini-specific accept all function
@@ -1228,21 +2216,54 @@ function acceptAllPIIForChatGPT() {
             return;
         }
         
-        let redactedText = window.chatGPTOriginalText;
+        // Get current text from textarea (may have been modified)
+        let redactedText = textarea.value || textarea.textContent || window.chatGPTOriginalText || '';
         
-        // Sort PII by length (longest first) to avoid partial replacements
-        const sortedPII = window.chatGPTFoundPII.sort((a, b) => b.value.length - a.value.length);
+        // Sort PII by position (reverse order to maintain indices when replacing)
+        const sortedPII = [...window.chatGPTFoundPII].sort((a, b) => b.start - a.start);
         
-        // Replace each PII with its redaction label
+        // Replace each PII with its redaction label (from end to start to maintain positions)
         sortedPII.forEach(pii => {
             const redactionLabel = getRedactionLabel(pii.type);
-            // Use global replace to catch all instances
-            redactedText = redactedText.replace(new RegExp(pii.value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), redactionLabel);
+            
+            // Verify the text at this position matches what we expect
+            const textAtPosition = redactedText.substring(pii.start, pii.end);
+            
+            if (textAtPosition === pii.value || textAtPosition.toLowerCase() === pii.value.toLowerCase()) {
+                // Offsets are correct, use them
+                redactedText = redactedText.substring(0, pii.start) + redactionLabel + redactedText.substring(pii.end);
+                console.log(`[PII Extension] Redacted "${pii.value}" at ${pii.start}-${pii.end}`);
+            } else {
+                // Offsets don't match, try to find the text
+                console.warn(`[PII Extension] Offset mismatch for "${pii.value}": expected at ${pii.start}-${pii.end}, found "${textAtPosition}"`);
+                
+                // Escape special regex characters
+                const escapedPii = pii.value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const regex = new RegExp(escapedPii, 'gi');
+                const match = redactedText.match(regex);
+                
+                if (match && match.index !== undefined) {
+                    const foundIndex = match.index;
+                    const foundLength = match[0].length;
+                    redactedText = redactedText.substring(0, foundIndex) + redactionLabel + redactedText.substring(foundIndex + foundLength);
+                    console.log(`[PII Extension] Redacted "${pii.value}" at adjusted position: ${foundIndex}`);
+                } else {
+                    console.warn(`[PII Extension] Could not find "${pii.value}" in text, skipping`);
+                }
+            }
         });
         
         // Update input field safely (works for both ChatGPT and Gemini)
         const success = setChatGPTInputValue(redactedText, textarea);
         if (success) {
+            // Remove all overlays
+            document.querySelectorAll('.pii-textarea-overlay').forEach(el => {
+                if (el._updatePosition) {
+                    window.removeEventListener('scroll', el._updatePosition, true);
+                }
+                el.remove();
+            });
+            
             alert(`Successfully redacted ${sortedPII.length} PII items. Your message is ready to send.`);
             
             // Clean up stored data
@@ -1815,3 +2836,4 @@ if (document.readyState === 'loading') {
 
 // Fallback: also try after a delay to handle dynamic Google Docs loading
 setTimeout(initializePiiDetector, 2000); 
+

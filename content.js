@@ -2369,19 +2369,32 @@ function rejectTextareaSuggestion(overlayElement, suggestionId, popup) {
     const start = parseInt(overlayElement.getAttribute('data-pii-start'));
     const end = parseInt(overlayElement.getAttribute('data-pii-end'));
     
-    // Remove this overlay
-    if (overlayElement._updatePosition) {
-        window.removeEventListener('scroll', overlayElement._updatePosition, true);
-    }
-    overlayElement.remove();
+    // Remove this overlay and all related overlays for this PII (in case of multi-line)
+    // Find all overlays with the same PII value and position, remove them
+    document.querySelectorAll('.pii-textarea-overlay').forEach(overlay => {
+        const overlayValue = overlay.getAttribute('data-pii-value');
+        const overlayStart = parseInt(overlay.getAttribute('data-pii-start'));
+        const overlayEnd = parseInt(overlay.getAttribute('data-pii-end'));
+        
+        // Check if this overlay matches the rejected PII
+        if (overlayValue === piiValue && overlayStart === start && overlayEnd === end) {
+            if (overlay._updatePosition) {
+                window.removeEventListener('scroll', overlay._updatePosition, true);
+                window.removeEventListener('resize', overlay._updatePosition);
+            }
+            overlay.remove();
+        }
+    });
     
     // Remove this PII from the list
     window.chatGPTFoundPII = window.chatGPTFoundPII.filter(p => 
         !(p.start === start && p.end === end && p.value === piiValue)
     );
     
+    // Remove the popup
     popup.remove();
-    console.log(`[PII Extension] Rejected: ${piiType} "${piiValue}"`);
+    
+    console.log(`[PII Extension] Rejected: ${piiType} "${piiValue}" - highlights removed`);
 }
 
 // ChatGPT/Gemini-specific accept all function
@@ -3029,6 +3042,198 @@ function detectPageType() {
 }
 
 // Initialize the PII detector with robust DOM loading handling
+// ============================================================================
+// MESSAGE SEND DETECTION AND HIGHLIGHT CLEANUP
+// ============================================================================
+
+/**
+ * Detects when a message is sent and clears highlights from input field
+ * Also ensures highlights don't appear in sent messages
+ */
+function setupMessageSendDetection() {
+    const pageType = detectPageType();
+    
+    if (pageType !== 'chatgpt' && pageType !== 'gemini') {
+        return; // Only needed for chat interfaces
+    }
+    
+    console.log(`[PII Extension] Setting up message send detection for ${pageType}`);
+    
+    // Strategy 1: Listen for send button clicks
+    const sendButtonSelectors = [
+        'button[data-testid="send-button"]',
+        'button[aria-label*="Send"]',
+        'button[aria-label*="send"]',
+        '[data-testid="send-button"]',
+        'button[type="submit"]',
+        'button.send-button',
+        'button[class*="send"]'
+    ];
+    
+    // Function to clear highlights from input field
+    const clearInputHighlights = () => {
+        console.log('[PII Extension] Clearing highlights from input field after message send');
+        
+        // Remove all textarea overlay highlights
+        document.querySelectorAll('.pii-textarea-overlay').forEach(el => {
+            if (el._updatePosition) {
+                window.removeEventListener('scroll', el._updatePosition, true);
+                window.removeEventListener('resize', el._updatePosition);
+            }
+            el.remove();
+        });
+        
+        // Remove suggestion popups
+        document.querySelectorAll('.pii-suggestion-popup').forEach(popup => {
+            popup.remove();
+        });
+        
+        // Clear stored data
+        delete window.chatGPTOriginalText;
+        delete window.chatGPTFoundPII;
+        delete window.chatGPTTextarea;
+    };
+    
+    // Add click listeners to send buttons
+    const addSendButtonListeners = () => {
+        sendButtonSelectors.forEach(selector => {
+            try {
+                const buttons = document.querySelectorAll(selector);
+                buttons.forEach(button => {
+                    // Only add listener if not already added
+                    if (!button.dataset.piiListenerAdded) {
+                        button.addEventListener('click', () => {
+                            console.log('[PII Extension] Send button clicked, clearing highlights');
+                            // Small delay to ensure message is sent
+                            setTimeout(clearInputHighlights, 100);
+                        }, { once: false });
+                        button.dataset.piiListenerAdded = 'true';
+                    }
+                });
+            } catch (e) {
+                // Ignore errors
+            }
+        });
+    };
+    
+    // Initial setup
+    addSendButtonListeners();
+    
+    // Re-setup when DOM changes (for dynamic send buttons)
+    const sendButtonObserver = new MutationObserver(() => {
+        addSendButtonListeners();
+    });
+    
+    sendButtonObserver.observe(document.body, {
+        childList: true,
+        subtree: true
+    });
+    
+    // Strategy 2: Monitor input field for clearing (when it becomes empty after send)
+    const monitorInputField = () => {
+        const textareaSelectors = [
+            'textarea[aria-label*="prompt"]',
+            'textarea[aria-label*="message"]',
+            'textarea[placeholder*="prompt"]',
+            'textarea[placeholder*="message"]',
+            'textarea[contenteditable="true"]',
+            'div[contenteditable="true"][role="textbox"]',
+            'textarea'
+        ];
+        
+        let lastText = '';
+        let lastTextLength = 0;
+        
+        const checkInputField = () => {
+            let textarea = null;
+            for (const selector of textareaSelectors) {
+                textarea = document.querySelector(selector);
+                if (textarea) break;
+            }
+            
+            if (textarea) {
+                const currentText = textarea.value || textarea.textContent || '';
+                const currentLength = currentText.length;
+                
+                // If text was cleared (went from non-empty to empty), message was likely sent
+                if (lastTextLength > 0 && currentLength === 0 && lastText !== currentText) {
+                    console.log('[PII Extension] Input field cleared, message likely sent');
+                    clearInputHighlights();
+                }
+                
+                lastText = currentText;
+                lastTextLength = currentLength;
+            }
+        };
+    
+        // Check periodically
+        setInterval(checkInputField, 500);
+    };
+    
+    monitorInputField();
+    
+    // Strategy 3: Monitor chat history to ensure no highlights appear in sent messages
+    const monitorChatHistory = () => {
+        const chatHistoryObserver = new MutationObserver((mutations) => {
+            // Check for new message elements being added
+            mutations.forEach(mutation => {
+                mutation.addedNodes.forEach(node => {
+                    if (node.nodeType === Node.ELEMENT_NODE) {
+                        // Remove any highlights from newly added messages
+                        const highlights = node.querySelectorAll ? node.querySelectorAll('.pii-textarea-overlay, .pii-highlight, .pii-overlay-highlight') : [];
+                        highlights.forEach(highlight => {
+                            console.log('[PII Extension] Removing highlight from sent message');
+                            highlight.remove();
+                        });
+                        
+                        // Also check if the node itself is a highlight
+                        if (node.classList && (
+                            node.classList.contains('pii-textarea-overlay') ||
+                            node.classList.contains('pii-highlight') ||
+                            node.classList.contains('pii-overlay-highlight')
+                        )) {
+                            // Check if it's in a message bubble (sent message)
+                            let parent = node.parentElement;
+                            let isInMessage = false;
+                            while (parent) {
+                                if (parent.classList && (
+                                    parent.classList.contains('message') ||
+                                    parent.classList.contains('chat-message') ||
+                                    parent.getAttribute('data-message-id') ||
+                                    parent.getAttribute('data-testid')?.includes('message')
+                                )) {
+                                    isInMessage = true;
+                                    break;
+                                }
+                                parent = parent.parentElement;
+                            }
+                            
+                            if (isInMessage) {
+                                console.log('[PII Extension] Removing highlight from sent message bubble');
+                                node.remove();
+                            }
+                        }
+                    }
+                });
+            });
+        });
+        
+        // Observe the entire document for new message additions
+        chatHistoryObserver.observe(document.body, {
+            childList: true,
+            subtree: true
+        });
+    };
+    
+    monitorChatHistory();
+    
+    console.log('[PII Extension] Message send detection setup complete');
+}
+
+// ============================================================================
+// END MESSAGE SEND DETECTION
+// ============================================================================
+
 function initializePiiDetector() {
   const pageType = detectPageType();
   console.log(`Detected page type: ${pageType}`);
@@ -3036,11 +3241,15 @@ function initializePiiDetector() {
   // Ensure document.body is available
   if (document.body) {
     injectScanButton();
+    // Setup message send detection for chat interfaces
+    setupMessageSendDetection();
   } else {
     // Wait for body to be available
     const observer = new MutationObserver((mutations, obs) => {
       if (document.body) {
         injectScanButton();
+        // Setup message send detection for chat interfaces
+        setupMessageSendDetection();
         obs.disconnect();
       }
     });

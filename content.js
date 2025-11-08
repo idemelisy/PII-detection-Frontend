@@ -234,18 +234,41 @@ function findContentArea() {
   const pageType = detectPageType();
   console.log(`Finding content area for page type: ${pageType}`);
   
-  // IMPORTANT: For ChatGPT, NEVER return elements we might modify
-  // Only use for scanning, never for DOM manipulation
-  if (pageType === 'chatgpt') {
-    console.log("[PII Extension] ChatGPT detected - using textarea-only approach");
-    const textarea = document.querySelector("textarea");
-    if (textarea) {
-      // Create a virtual container with the textarea content for scanning only
-      const virtualContainer = document.createElement('div');
-      virtualContainer.textContent = textarea.value;
-      return virtualContainer;
+  // IMPORTANT: For ChatGPT and Gemini, ONLY scan the input textarea
+  // Never scan the conversation history
+  if (pageType === 'chatgpt' || pageType === 'gemini') {
+    console.log(`[PII Extension] ${pageType === 'gemini' ? 'Gemini' : 'ChatGPT'} detected - using textarea-only approach`);
+    
+    // Try multiple selectors for textarea/input fields
+    const textareaSelectors = [
+      'textarea[aria-label*="prompt"]',
+      'textarea[aria-label*="message"]',
+      'textarea[placeholder*="prompt"]',
+      'textarea[placeholder*="message"]',
+      'textarea[contenteditable="true"]',
+      'div[contenteditable="true"][role="textbox"]',
+      'textarea'
+    ];
+    
+    let textarea = null;
+    for (const selector of textareaSelectors) {
+      textarea = document.querySelector(selector);
+      if (textarea) {
+        console.log(`[PII Extension] Found input field with selector: ${selector}`);
+        break;
+      }
     }
-    return null;
+    
+    if (textarea) {
+      // Create a virtual container with ONLY the textarea content for scanning
+      const virtualContainer = document.createElement('div');
+      virtualContainer.textContent = textarea.value || textarea.textContent || '';
+      console.log(`[PII Extension] Scanning only input field content (${virtualContainer.textContent.length} characters)`);
+      return virtualContainer;
+    } else {
+      console.warn("[PII Extension] No textarea/input field found");
+      return null;
+    }
   }
   
   let contentSelectors = [];
@@ -356,19 +379,43 @@ function getRedactionLabel(piiType) {
 // ChatGPT Integration Helper Functions
 // These functions safely update ChatGPT's input using React's synthetic event system
 
-// Safely set ChatGPT input value and trigger React state update
-function setChatGPTInputValue(newText) {
+// Safely set ChatGPT/Gemini input value and trigger React state update
+function setChatGPTInputValue(newText, textareaElement = null) {
     try {
-        const textarea = document.querySelector("textarea");
+        // Use provided textarea or try to find it
+        let textarea = textareaElement;
         if (!textarea) {
-            console.warn("[PII Extension] ChatGPT input textarea not found");
+            const textareaSelectors = [
+                'textarea[aria-label*="prompt"]',
+                'textarea[aria-label*="message"]',
+                'textarea[placeholder*="prompt"]',
+                'textarea[placeholder*="message"]',
+                'textarea[contenteditable="true"]',
+                'div[contenteditable="true"][role="textbox"]',
+                'textarea'
+            ];
+            
+            for (const selector of textareaSelectors) {
+                textarea = document.querySelector(selector);
+                if (textarea) break;
+            }
+        }
+        
+        if (!textarea) {
+            console.warn("[PII Extension] Input field not found");
             return false;
         }
         
-        console.log("[PII Extension] Setting ChatGPT input value safely...");
+        const pageType = detectPageType();
+        console.log(`[PII Extension] Setting ${pageType === 'gemini' ? 'Gemini' : 'ChatGPT'} input value safely...`);
         
         // IMPORTANT: Only update the value, never replace DOM nodes
-        textarea.value = newText;
+        // Handle both textarea.value and contenteditable divs
+        if (textarea.tagName === 'TEXTAREA') {
+            textarea.value = newText;
+        } else {
+            textarea.textContent = newText;
+        }
         
         // Dispatch React-compatible events to maintain state sync
         const inputEvent = new Event("input", { bubbles: true });
@@ -381,10 +428,10 @@ function setChatGPTInputValue(newText) {
         // Focus to ensure proper React state
         textarea.focus();
         
-        console.log("[PII Extension] ChatGPT input updated successfully without DOM manipulation");
+        console.log(`[PII Extension] ${pageType === 'gemini' ? 'Gemini' : 'ChatGPT'} input updated successfully without DOM manipulation`);
         return true;
     } catch (error) {
-        console.error("[PII Extension] Error updating ChatGPT input:", error);
+        console.error("[PII Extension] Error updating input field:", error);
         return false;
     }
 }
@@ -804,9 +851,12 @@ async function handleScanClick() {
     
     const pageType = detectPageType();
     
-    // Disable send button during scanning if on ChatGPT
-    if (pageType === 'chatgpt') {
-      toggleChatGPTSendButton(false);
+    // Disable send button during scanning if on ChatGPT or Gemini
+    if (pageType === 'chatgpt' || pageType === 'gemini') {
+      if (pageType === 'chatgpt') {
+        toggleChatGPTSendButton(false);
+      }
+      // For Gemini, we don't modify the send button to avoid breaking the UI
     }
     
     // Clear previous highlights silently before starting new scan
@@ -832,16 +882,38 @@ async function handleScanClick() {
     }
     
     // Extract text content from the editor
+    // For chat interfaces (ChatGPT, Gemini), only get text from input field
     let textToAnalyze = '';
-    if (pageType === 'chatgpt') {
-      const textarea = document.querySelector("textarea");
-      textToAnalyze = textarea ? textarea.value : '';
+    if (pageType === 'chatgpt' || pageType === 'gemini') {
+      // Try multiple selectors for textarea/input fields
+      const textareaSelectors = [
+        'textarea[aria-label*="prompt"]',
+        'textarea[aria-label*="message"]',
+        'textarea[placeholder*="prompt"]',
+        'textarea[placeholder*="message"]',
+        'textarea[contenteditable="true"]',
+        'div[contenteditable="true"][role="textbox"]',
+        'textarea'
+      ];
+      
+      let textarea = null;
+      for (const selector of textareaSelectors) {
+        textarea = document.querySelector(selector);
+        if (textarea) break;
+      }
+      
+      if (textarea) {
+        textToAnalyze = textarea.value || textarea.textContent || '';
+        console.log(`[PII Extension] Extracted ${textToAnalyze.length} characters from input field only`);
+      } else {
+        textToAnalyze = '';
+      }
     } else {
       textToAnalyze = editor.textContent || editor.innerText || '';
     }
     
     if (!textToAnalyze.trim()) {
-      alert("No text found to analyze. Please add some content first.");
+      alert("No text found to analyze. Please type your message in the input field first.");
       if (pageType === 'chatgpt') {
         try {
           toggleChatGPTSendButton(true);
@@ -926,6 +998,7 @@ async function handleScanClick() {
       if (pageType === 'chatgpt') {
         toggleChatGPTSendButton(true);
       }
+      // For Gemini, we don't modify the send button
       // Restore button
       const scanButton = document.getElementById("pii-scan-button");
       if (scanButton) {
@@ -944,9 +1017,9 @@ async function handleScanClick() {
 function highlightPiiInDocument(entities) {
     const pageType = detectPageType();
     
-    // CRITICAL: For ChatGPT, use completely different approach
-    if (pageType === 'chatgpt') {
-        console.log("[PII Extension] Using ChatGPT-safe highlighting approach");
+    // CRITICAL: For ChatGPT and Gemini, use special approach that only highlights in input field
+    if (pageType === 'chatgpt' || pageType === 'gemini') {
+        console.log(`[PII Extension] Using ${pageType === 'gemini' ? 'Gemini' : 'ChatGPT'}-safe highlighting approach`);
         highlightPiiForChatGPT(entities);
         return;
     }
@@ -1041,25 +1114,48 @@ function highlightPiiInDocument(entities) {
     }
 }
 
-// ChatGPT-specific highlighting that never touches DOM
+// ChatGPT/Gemini-specific highlighting that only works with input field
 function highlightPiiForChatGPT(entities) {
     try {
-        const textarea = document.querySelector("textarea");
+        const pageType = detectPageType();
+        const isGemini = pageType === 'gemini';
+        
+        // Try multiple selectors to find the input field
+        const textareaSelectors = [
+            'textarea[aria-label*="prompt"]',
+            'textarea[aria-label*="message"]',
+            'textarea[placeholder*="prompt"]',
+            'textarea[placeholder*="message"]',
+            'textarea[contenteditable="true"]',
+            'div[contenteditable="true"][role="textbox"]',
+            'textarea'
+        ];
+        
+        let textarea = null;
+        for (const selector of textareaSelectors) {
+            textarea = document.querySelector(selector);
+            if (textarea) {
+                console.log(`[PII Extension] Found input field with selector: ${selector}`);
+                break;
+            }
+        }
+        
         if (!textarea) {
-            console.warn("[PII Extension] ChatGPT textarea not found");
-            alert("ChatGPT input not found. Please make sure you're in the chat interface.");
+            console.warn(`[PII Extension] ${isGemini ? 'Gemini' : 'ChatGPT'} input field not found`);
+            alert(`${isGemini ? 'Gemini' : 'ChatGPT'} input not found. Please make sure you're in the chat interface.`);
             return;
         }
         
-        const originalText = textarea.value;
+        // Get text from input field (handle both textarea.value and contenteditable divs)
+        const originalText = textarea.value || textarea.textContent || '';
         if (!originalText.trim()) {
-            alert("No text found in ChatGPT input. Please type a message first.");
+            alert(`No text found in ${isGemini ? 'Gemini' : 'ChatGPT'} input. Please type your message in the input field first.`);
             return;
         }
         
-        console.log("[PII Extension] Analyzing ChatGPT text for PII...");
+        console.log(`[PII Extension] Analyzing ${isGemini ? 'Gemini' : 'ChatGPT'} input field text for PII (${originalText.length} characters)...`);
         
-        // Find PII in the text without modifying DOM
+        // Find PII in the text (only from input field, not conversation history)
         const foundPII = [];
         entities.forEach(entity => {
             const lowerText = originalText.toLowerCase();
@@ -1071,18 +1167,19 @@ function highlightPiiForChatGPT(entities) {
         });
         
         if (foundPII.length === 0) {
-            alert("No PII found in your ChatGPT message.");
+            alert(`No PII found in your ${isGemini ? 'Gemini' : 'ChatGPT'} message.`);
             return;
         }
         
         // Store the original text and PII info for later use
         window.chatGPTOriginalText = originalText;
         window.chatGPTFoundPII = foundPII;
+        window.chatGPTTextarea = textarea; // Store reference to the input field
         
         // Show summary without highlighting
         const piiSummary = foundPII.map(pii => `${pii.type}: "${pii.value}"`).join('\n');
         const userConfirm = confirm(
-            `Found ${foundPII.length} PII items in your message:\n\n${piiSummary}\n\n` +
+            `Found ${foundPII.length} PII items in your input field:\n\n${piiSummary}\n\n` +
             `Click OK to use the "Accept All" button to redact them, or Cancel to review individual items.`
         );
         
@@ -1094,17 +1191,39 @@ function highlightPiiForChatGPT(entities) {
         }
         
     } catch (error) {
-        console.error("[PII Extension] Error in ChatGPT PII analysis:", error);
-        alert("Error analyzing ChatGPT text. Please try again.");
+        console.error("[PII Extension] Error in chat interface PII analysis:", error);
+        const pageType = detectPageType();
+        alert(`Error analyzing ${pageType === 'gemini' ? 'Gemini' : 'ChatGPT'} text. Please try again.`);
     }
 }
 
-// ChatGPT-specific accept all function
+// ChatGPT/Gemini-specific accept all function
 function acceptAllPIIForChatGPT() {
     try {
-        const textarea = document.querySelector("textarea");
+        const pageType = detectPageType();
+        const isGemini = pageType === 'gemini';
+        
+        // Use stored textarea reference if available, otherwise try to find it
+        let textarea = window.chatGPTTextarea;
+        if (!textarea) {
+            const textareaSelectors = [
+                'textarea[aria-label*="prompt"]',
+                'textarea[aria-label*="message"]',
+                'textarea[placeholder*="prompt"]',
+                'textarea[placeholder*="message"]',
+                'textarea[contenteditable="true"]',
+                'div[contenteditable="true"][role="textbox"]',
+                'textarea'
+            ];
+            
+            for (const selector of textareaSelectors) {
+                textarea = document.querySelector(selector);
+                if (textarea) break;
+            }
+        }
+        
         if (!textarea || !window.chatGPTOriginalText || !window.chatGPTFoundPII) {
-            console.warn("[PII Extension] ChatGPT data not available for redaction");
+            console.warn(`[PII Extension] ${isGemini ? 'Gemini' : 'ChatGPT'} data not available for redaction`);
             alert("Please scan for PII first.");
             return;
         }
@@ -1121,20 +1240,21 @@ function acceptAllPIIForChatGPT() {
             redactedText = redactedText.replace(new RegExp(pii.value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), redactionLabel);
         });
         
-        // Update ChatGPT input safely
-        const success = setChatGPTInputValue(redactedText);
+        // Update input field safely (works for both ChatGPT and Gemini)
+        const success = setChatGPTInputValue(redactedText, textarea);
         if (success) {
             alert(`Successfully redacted ${sortedPII.length} PII items. Your message is ready to send.`);
             
             // Clean up stored data
             delete window.chatGPTOriginalText;
             delete window.chatGPTFoundPII;
+            delete window.chatGPTTextarea;
         } else {
-            alert("Failed to update ChatGPT input. Please try again.");
+            alert(`Failed to update ${isGemini ? 'Gemini' : 'ChatGPT'} input. Please try again.`);
         }
         
     } catch (error) {
-        console.error("[PII Extension] Error in ChatGPT accept all:", error);
+        console.error("[PII Extension] Error in chat interface accept all:", error);
         alert("Error redacting PII. Please try again.");
     }
 }
@@ -1656,6 +1776,8 @@ function detectPageType() {
     return 'google-docs';
   } else if (hostname.includes('chat.openai.com') || hostname.includes('chatgpt.com')) {
     return 'chatgpt';
+  } else if (hostname.includes('gemini.google.com') || hostname.includes('bard.google.com')) {
+    return 'gemini';
   } else if (hostname.includes('gmail.com')) {
     return 'gmail';
   } else {

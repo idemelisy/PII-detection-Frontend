@@ -247,12 +247,180 @@ function injectScanButton() {
     container.appendChild(revertButton);
     container.appendChild(modelSelectContainer);
     
+    // Make container draggable
+    makeContainerDraggable(container);
+    
     // Append the container directly to the body (CSS handles positioning to top-right)
     document.body.appendChild(container);
     console.log("PII Scan buttons injected successfully to document.body");
   } else {
     console.log("PII Scan container already exists, skipping injection");
+    // Make existing container draggable if it wasn't already
+    const existingContainer = document.getElementById("pii-scan-container");
+    if (existingContainer && !existingContainer.hasAttribute('data-draggable-initialized')) {
+      makeContainerDraggable(existingContainer);
+    }
   }
+}
+
+// Make the PII scan container draggable
+function makeContainerDraggable(container) {
+  if (!container) return;
+  
+  // Mark as initialized to avoid duplicate initialization
+  container.setAttribute('data-draggable-initialized', 'true');
+  
+  // Load saved position from localStorage
+  const savedPosition = localStorage.getItem('pii-container-position');
+  if (savedPosition) {
+    try {
+      const { top, left } = JSON.parse(savedPosition);
+      // Validate position is within viewport
+      if (typeof top === 'number' && typeof left === 'number' && 
+          top >= 0 && left >= 0 && 
+          top < window.innerHeight && left < window.innerWidth) {
+        container.style.top = top + 'px';
+        container.style.left = left + 'px';
+        container.style.right = 'auto';
+        container.style.bottom = 'auto';
+      }
+    } catch (e) {
+      console.warn('[PII Extension] Error loading saved position:', e);
+    }
+  }
+  
+  let isDragging = false;
+  let initialX;
+  let initialY;
+  
+  // Drag handle removed - user prefers dragging from container background only
+  // const dragHandle = document.createElement('div');
+  // dragHandle.style.cssText = `
+  //   width: 100%;
+  //   height: 30px;
+  //   background: linear-gradient(135deg, #048BA8 0%, #22D3EE 100%);
+  //   border-radius: 8px 8px 0 0;
+  //   cursor: move;
+  //   display: flex;
+  //   align-items: center;
+  //   justify-content: center;
+  //   position: relative;
+  //   margin-bottom: 8px;
+  //   user-select: none;
+  // `;
+  // dragHandle.innerHTML = '<span style="color: white; font-size: 12px; font-weight: 600;">⋮⋮ Drag to move</span>';
+  // dragHandle.title = 'Drag to move the extension panel';
+  // 
+  // // Insert drag handle at the beginning
+  // container.insertBefore(dragHandle, container.firstChild);
+  // 
+  // // Mouse down on drag handle
+  // dragHandle.addEventListener('mousedown', dragStart);
+  
+  // Mouse down on container (for dragging from container background)
+  container.addEventListener('mousedown', (e) => {
+    // Only start dragging if clicking on the container background
+    // Don't drag if clicking on buttons or inputs
+    if (e.target === container || (e.target.closest('#pii-scan-container') === container && 
+        !e.target.closest('button') && !e.target.closest('select') && !e.target.closest('label'))) {
+      dragStart(e);
+    }
+  });
+  
+  // Touch events for mobile support
+  container.addEventListener('touchstart', (e) => {
+    // Only start dragging if touching the container background
+    if (e.target === container || (e.target.closest('#pii-scan-container') === container && 
+        !e.target.closest('button') && !e.target.closest('select') && !e.target.closest('label'))) {
+      e.preventDefault();
+      dragStart(e);
+    }
+  });
+  
+  function dragStart(e) {
+    // Don't drag if clicking on interactive elements
+    if (e.target.tagName === 'BUTTON' || e.target.tagName === 'SELECT' || e.target.tagName === 'LABEL' || 
+        e.target.closest('button') || e.target.closest('select')) {
+      return;
+    }
+    
+    const rect = container.getBoundingClientRect();
+    
+    if (e.type === 'touchstart') {
+      initialX = e.touches[0].clientX - rect.left;
+      initialY = e.touches[0].clientY - rect.top;
+    } else {
+      initialX = e.clientX - rect.left;
+      initialY = e.clientY - rect.top;
+    }
+    
+    // Start dragging from container background
+    if (e.target === container || (e.target.closest('#pii-scan-container') === container && 
+        !e.target.closest('button') && !e.target.closest('select') && !e.target.closest('label'))) {
+      isDragging = true;
+      container.style.cursor = 'move';
+      container.style.transition = 'none'; // Disable transitions during drag
+    }
+  }
+  
+  function drag(e) {
+    if (isDragging) {
+      e.preventDefault();
+      
+      let clientX, clientY;
+      if (e.type === 'touchmove') {
+        clientX = e.touches[0].clientX;
+        clientY = e.touches[0].clientY;
+      } else {
+        clientX = e.clientX;
+        clientY = e.clientY;
+      }
+      
+      // Calculate new position
+      const newLeft = clientX - initialX;
+      const newTop = clientY - initialY;
+      
+      // Constrain to viewport
+      const rect = container.getBoundingClientRect();
+      const maxLeft = window.innerWidth - rect.width;
+      const maxTop = window.innerHeight - rect.height;
+      
+      const constrainedLeft = Math.max(0, Math.min(newLeft, maxLeft));
+      const constrainedTop = Math.max(0, Math.min(newTop, maxTop));
+      
+      container.style.left = constrainedLeft + 'px';
+      container.style.top = constrainedTop + 'px';
+      container.style.right = 'auto';
+      container.style.bottom = 'auto';
+    }
+  }
+  
+  function dragEnd(e) {
+    if (isDragging) {
+      isDragging = false;
+      container.style.cursor = 'default';
+      container.style.transition = ''; // Re-enable transitions
+      
+      // Save position to localStorage (save as viewport-relative for fixed positioning)
+      const rect = container.getBoundingClientRect();
+      const position = {
+        top: rect.top,
+        left: rect.left
+      };
+      localStorage.setItem('pii-container-position', JSON.stringify(position));
+    }
+  }
+  
+  // Add event listeners
+  document.addEventListener('mousemove', drag);
+  document.addEventListener('mouseup', dragEnd);
+  document.addEventListener('touchmove', (e) => {
+    if (isDragging) {
+      e.preventDefault();
+      drag(e);
+    }
+  });
+  document.addEventListener('touchend', dragEnd);
 }
 
 // Universal content finder that works on different page types

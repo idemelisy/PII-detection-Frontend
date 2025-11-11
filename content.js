@@ -1387,15 +1387,10 @@ function revertPIIsInResponse() {
                     }
                 }
             } else if (mapping.type === 'LOCATION') {
-                // For locations, try full match and partial matches
-                regexPatterns.push(new RegExp(`\\b${escapedFake}\\b`, 'gi'));
-                
-                // Also try matching parts of the address
-                const locationParts = fakeValue.split(/[,\s]+/).filter(p => p.length > 2);
-                locationParts.forEach(part => {
-                    const escapedPart = part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                    regexPatterns.push(new RegExp(`\\b${escapedPart}\\b`, 'gi'));
-                });
+                // For locations, ONLY match the full location string
+                // Do NOT do partial matching - locations are too complex and GPT reformats them significantly
+                // Partial matching causes incorrect replacements (e.g., "Oak Street" -> wrong location)
+                regexPatterns.push(new RegExp(escapedFake.replace(/\s+/g, '\\s+'), 'gi'));
             } else {
                 // For emails, phones, etc., use exact match with flexible whitespace
                 regexPatterns.push(new RegExp(escapedFake.replace(/\s+/g, '\\s+'), 'gi'));
@@ -1520,7 +1515,9 @@ function revertPIIsInResponse() {
                     }
                 }
             } else if (mapping.type === 'LOCATION') {
-                regexPatterns.push(new RegExp(`\\b${escapedFake}\\b`, 'gi'));
+                // For locations, ONLY match the full location string with flexible whitespace
+                // Do NOT do partial matching - locations are too complex and GPT reformats them
+                regexPatterns.push(new RegExp(escapedFake.replace(/\s+/g, '\\s+'), 'gi'));
             } else {
                 regexPatterns.push(new RegExp(escapedFake.replace(/\s+/g, '\\s+'), 'gi'));
             }
@@ -1569,24 +1566,118 @@ function revertPIIsInResponse() {
         }
         
         if (modified) {
-            // Update the element's text content
-            // For contenteditable or complex structures, we need to be careful
-            if (element.contentEditable === 'true') {
-                element.textContent = modifiedText;
-            } else {
-                // Try to preserve structure by updating text nodes
-                const walker = document.createTreeWalker(
-                    element,
-                    NodeFilter.SHOW_TEXT,
-                    null,
-                    false
-                );
+            // Preserve DOM structure by replacing only text nodes, not the entire element
+            // This maintains GPT's formatting, line breaks, and HTML structure
+            const walker = document.createTreeWalker(
+                element,
+                NodeFilter.SHOW_TEXT,
+                null,
+                false
+            );
+            
+            let textNode;
+            const textNodes = [];
+            
+            // Collect all text nodes
+            while (textNode = walker.nextNode()) {
+                textNodes.push(textNode);
+            }
+            
+            // Apply replacements directly to each text node to preserve structure
+            // Process each text node individually with all mappings
+            for (const textNode of textNodes) {
+                let nodeText = textNode.textContent;
+                let nodeModified = false;
                 
-                let textNode;
-                let remainingText = modifiedText;
+                // Apply each mapping replacement to this text node
+                // Process in reverse order (longest first) to avoid partial replacements
+                for (const mapping of sortedMappings) {
+                    const fakeValue = mapping.fake;
+                    const originalValue = mapping.original;
+                    const escapedFake = fakeValue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    
+                    // Create appropriate regex based on PII type
+                    let regex;
+                    if (mapping.type === 'PERSON' || mapping.type === 'NAME') {
+                        // For names, try full name first, then partial
+                        regex = new RegExp(`\\b${escapedFake}\\b`, 'gi');
+                    } else if (mapping.type === 'LOCATION') {
+                        // For locations, use exact match with flexible whitespace but NO partial matching
+                        // Locations are complex and GPT might reformat them, so we need exact matches only
+                        regex = new RegExp(escapedFake.replace(/\s+/g, '\\s+'), 'gi');
+                    } else {
+                        // For emails, phones, etc., match with flexible whitespace
+                        regex = new RegExp(escapedFake.replace(/\s+/g, '\\s+'), 'gi');
+                    }
+                    
+                    if (regex.test(nodeText)) {
+                        // Determine replacement value
+                        let replacementValue = originalValue;
+                        let allowPartialMatch = false;
+                        
+                        if (mapping.type === 'PERSON' || mapping.type === 'NAME') {
+                            const nameParts = fakeValue.split(/\s+/);
+                            const originalParts = originalValue.split(/\s+/);
+                            
+                            // Only allow partial matching if both fake and original have multiple parts
+                            if (nameParts.length >= 2 && originalParts.length >= 2) {
+                                // Check if we're matching a full name or partial
+                                const fullMatch = nodeText.includes(fakeValue);
+                                
+                                if (!fullMatch) {
+                                    // Check for partial matches - be very conservative
+                                    const firstName = nameParts[0];
+                                    const lastName = nameParts[nameParts.length - 1];
+                                    
+                                    // Only match if the text contains JUST the first or last name (with word boundaries)
+                                    const firstNameRegex = new RegExp(`\\b${firstName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
+                                    const lastNameRegex = new RegExp(`\\b${lastName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
+                                    
+                                    if (firstNameRegex.test(nodeText) && !nodeText.includes(fakeValue)) {
+                                        // Check if it's a standalone first name (not part of another name)
+                                        const firstNameMatches = nodeText.match(firstNameRegex);
+                                        if (firstNameMatches && firstNameMatches.length > 0) {
+                                            // Only replace if it's clearly the first name alone
+                                            replacementValue = originalParts[0];
+                                            allowPartialMatch = true;
+                                        }
+                                    } else if (lastNameRegex.test(nodeText) && !nodeText.includes(fakeValue)) {
+                                        // Check if it's a standalone last name
+                                        const lastNameMatches = nodeText.match(lastNameRegex);
+                                        if (lastNameMatches && lastNameMatches.length > 0) {
+                                            // Only replace if it's clearly the last name alone
+                                            replacementValue = originalParts[originalParts.length - 1];
+                                            allowPartialMatch = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Replace in this text node
+                        nodeText = nodeText.replace(regex, (match) => {
+                            // Always prefer full match
+                            if (match === fakeValue || match.toLowerCase() === fakeValue.toLowerCase()) {
+                                nodeModified = true;
+                                // Preserve case of first letter
+                                if (match[0] === match[0].toUpperCase() && replacementValue[0]) {
+                                    return replacementValue[0].toUpperCase() + replacementValue.slice(1);
+                                }
+                                return replacementValue;
+                            } else if (allowPartialMatch && (mapping.type === 'PERSON' || mapping.type === 'NAME')) {
+                                // Only do partial replacement if we explicitly allowed it
+                                nodeModified = true;
+                                return replacementValue;
+                            }
+                            return match;
+                        });
+                    }
+                }
                 
-                // Simple approach: replace all text content
-                element.textContent = modifiedText;
+                // Only update the text node if it was modified
+                if (nodeModified) {
+                    textNode.textContent = nodeText;
+                }
             }
             
             totalReverted++;

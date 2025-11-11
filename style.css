@@ -224,6 +224,31 @@
   border-radius: 12px;
   box-shadow: 0 8px 24px rgba(4, 139, 168, 0.15), 0 4px 8px rgba(0, 0, 0, 0.1);
   border: 1px solid rgba(103, 232, 249, 0.5);
+  transition: all 0.3s ease;
+  min-width: 200px;
+}
+
+/* Collapsed state - shrinks to small circular icon */
+#pii-scan-container.pii-collapsed {
+  min-width: 48px !important;
+  min-height: 48px !important;
+  width: 48px !important;
+  height: 48px !important;
+  padding: 0 !important;
+  border-radius: 50% !important;
+  overflow: hidden !important;
+  gap: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  background: linear-gradient(135deg, #048BA8 0%, #22D3EE 100%) !important;
+  box-shadow: 0 4px 12px rgba(4, 139, 168, 0.4) !important;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+#pii-scan-container.pii-collapsed:hover {
+  transform: scale(1.1);
+  box-shadow: 0 6px 16px rgba(4, 139, 168, 0.6) !important;
 }
 
 /* PII Highlighting with new color palette */

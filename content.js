@@ -240,6 +240,46 @@ function injectScanButton() {
     modelSelectContainer.appendChild(modelLabel);
     modelSelectContainer.appendChild(modelSelect);
     
+    // Collapse/Expand button
+    const collapseButton = document.createElement("button");
+    collapseButton.id = "pii-collapse-button";
+    collapseButton.innerHTML = `<span role="img" aria-label="Collapse">−</span>`;
+    collapseButton.title = "Minimize panel";
+    collapseButton.style.cssText = `
+      position: absolute;
+      top: 5px;
+      right: 5px;
+      width: 24px;
+      height: 24px;
+      padding: 0;
+      border: none;
+      border-radius: 4px;
+      background-color: rgba(4, 139, 168, 0.2);
+      color: #048BA8;
+      cursor: pointer;
+      font-size: 18px;
+      font-weight: bold;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 10;
+      transition: all 0.2s ease;
+    `;
+    collapseButton.onmouseenter = () => {
+      collapseButton.style.backgroundColor = 'rgba(4, 139, 168, 0.4)';
+    };
+    collapseButton.onmouseleave = () => {
+      collapseButton.style.backgroundColor = 'rgba(4, 139, 168, 0.2)';
+    };
+    collapseButton.onclick = (e) => {
+      e.stopPropagation();
+      toggleContainerCollapse(container);
+    };
+    
+    // Make container relative positioned for absolute collapse button
+    container.style.position = 'relative';
+    
+    container.appendChild(collapseButton);
     container.appendChild(scanButton);
     container.appendChild(clearButton);
     container.appendChild(acceptAllButton);
@@ -249,6 +289,9 @@ function injectScanButton() {
     
     // Make container draggable
     makeContainerDraggable(container);
+    
+    // Initialize collapse state
+    initializeContainerCollapse(container);
     
     // Append the container directly to the body (CSS handles positioning to top-right)
     document.body.appendChild(container);
@@ -421,6 +464,203 @@ function makeContainerDraggable(container) {
     }
   });
   document.addEventListener('touchend', dragEnd);
+}
+
+// Initialize container collapse state
+function initializeContainerCollapse(container) {
+  const isCollapsed = localStorage.getItem('pii-container-collapsed') === 'true';
+  if (isCollapsed) {
+    collapseContainer(container);
+  }
+}
+
+// Toggle container collapse/expand
+function toggleContainerCollapse(container) {
+  const isCollapsed = container.classList.contains('pii-collapsed');
+  
+  if (isCollapsed) {
+    expandContainer(container);
+  } else {
+    collapseContainer(container);
+  }
+}
+
+// Collapse container to minimal size - shrink to small icon in top-right
+function collapseContainer(container) {
+  container.classList.add('pii-collapsed');
+  
+  // Get current position
+  const rect = container.getBoundingClientRect();
+  const currentTop = rect.top;
+  const currentLeft = rect.left;
+  
+  // Hide all buttons except collapse button
+  const buttons = container.querySelectorAll('button:not(#pii-collapse-button)');
+  const modelContainer = container.querySelector('#pii-model-container');
+  
+  buttons.forEach(btn => {
+    btn.style.opacity = '0';
+    btn.style.height = '0';
+    btn.style.margin = '0';
+    btn.style.padding = '0';
+    btn.style.overflow = 'hidden';
+    btn.style.pointerEvents = 'none';
+  });
+  if (modelContainer) {
+    modelContainer.style.opacity = '0';
+    modelContainer.style.height = '0';
+    modelContainer.style.margin = '0';
+    modelContainer.style.padding = '0';
+    modelContainer.style.overflow = 'hidden';
+  }
+  
+  // Update collapse button to be the main visible element
+  const collapseBtn = container.querySelector('#pii-collapse-button');
+  if (collapseBtn) {
+    collapseBtn.innerHTML = '<span role="img" aria-label="Expand">🛡️</span>';
+    collapseBtn.title = 'Click to expand PII extension panel';
+    collapseBtn.style.cssText = `
+      position: relative;
+      top: 0;
+      right: 0;
+      width: 48px;
+      height: 48px;
+      padding: 0;
+      border: none;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #048BA8 0%, #22D3EE 100%);
+      color: white;
+      cursor: pointer;
+      font-size: 24px;
+      font-weight: normal;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 10;
+      transition: all 0.3s ease;
+      box-shadow: 0 4px 12px rgba(4, 139, 168, 0.4);
+      margin: 0;
+    `;
+    collapseBtn.onmouseenter = () => {
+      collapseBtn.style.transform = 'scale(1.1)';
+      collapseBtn.style.boxShadow = '0 6px 16px rgba(4, 139, 168, 0.6)';
+    };
+    collapseBtn.onmouseleave = () => {
+      collapseBtn.style.transform = 'scale(1)';
+      collapseBtn.style.boxShadow = '0 4px 12px rgba(4, 139, 168, 0.4)';
+    };
+  }
+  
+  // Animate container to small circular button in top-right
+  container.style.width = '48px';
+  container.style.height = '48px';
+  container.style.minWidth = '48px';
+  container.style.minHeight = '48px';
+  container.style.padding = '0';
+  container.style.borderRadius = '50%';
+  container.style.overflow = 'hidden';
+  
+  // Move to top-right if not already there (smooth animation)
+  const targetTop = 15;
+  const targetRight = 15;
+  container.style.top = targetTop + 'px';
+  container.style.right = targetRight + 'px';
+  container.style.left = 'auto';
+  container.style.bottom = 'auto';
+  
+  // Save state and position
+  localStorage.setItem('pii-container-collapsed', 'true');
+  localStorage.setItem('pii-container-collapsed-position', JSON.stringify({ top: targetTop, right: targetRight }));
+}
+
+// Expand container to full size
+function expandContainer(container) {
+  container.classList.remove('pii-collapsed');
+  
+  // Show all buttons with animation
+  const buttons = container.querySelectorAll('button:not(#pii-collapse-button)');
+  const modelContainer = container.querySelector('#pii-model-container');
+  
+  setTimeout(() => {
+    buttons.forEach(btn => {
+      btn.style.opacity = '1';
+      btn.style.height = '';
+      btn.style.margin = '';
+      btn.style.padding = '';
+      btn.style.overflow = '';
+      btn.style.pointerEvents = '';
+    });
+    if (modelContainer) {
+      modelContainer.style.opacity = '1';
+      modelContainer.style.height = '';
+      modelContainer.style.margin = '';
+      modelContainer.style.padding = '';
+      modelContainer.style.overflow = '';
+    }
+  }, 50);
+  
+  // Update collapse button back to small icon
+  const collapseBtn = container.querySelector('#pii-collapse-button');
+  if (collapseBtn) {
+    collapseBtn.innerHTML = '<span role="img" aria-label="Collapse">−</span>';
+    collapseBtn.title = 'Minimize panel';
+    collapseBtn.style.cssText = `
+      position: absolute;
+      top: 5px;
+      right: 5px;
+      width: 24px;
+      height: 24px;
+      padding: 0;
+      border: none;
+      border-radius: 4px;
+      background-color: rgba(4, 139, 168, 0.2);
+      color: #048BA8;
+      cursor: pointer;
+      font-size: 18px;
+      font-weight: bold;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 10;
+      transition: all 0.2s ease;
+      box-shadow: none;
+      margin: 0;
+    `;
+    collapseBtn.onmouseenter = () => {
+      collapseBtn.style.backgroundColor = 'rgba(4, 139, 168, 0.4)';
+    };
+    collapseBtn.onmouseleave = () => {
+      collapseBtn.style.backgroundColor = 'rgba(4, 139, 168, 0.2)';
+    };
+  }
+  
+  // Restore container to full size
+  container.style.width = '';
+  container.style.height = '';
+  container.style.minWidth = '';
+  container.style.minHeight = '';
+  container.style.padding = '';
+  container.style.borderRadius = '';
+  container.style.overflow = '';
+  
+  // Restore saved position if available
+  const savedPosition = localStorage.getItem('pii-container-position');
+  if (savedPosition) {
+    try {
+      const { top, left } = JSON.parse(savedPosition);
+      if (typeof top === 'number' && typeof left === 'number') {
+        container.style.top = top + 'px';
+        container.style.left = left + 'px';
+        container.style.right = 'auto';
+        container.style.bottom = 'auto';
+      }
+    } catch (e) {
+      console.warn('[PII Extension] Error restoring position:', e);
+    }
+  }
+  
+  // Save state
+  localStorage.setItem('pii-container-collapsed', 'false');
 }
 
 // Universal content finder that works on different page types

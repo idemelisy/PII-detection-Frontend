@@ -189,6 +189,30 @@ function injectScanButton() {
     acceptAllButton.innerHTML = `<span role="img" aria-label="Accept All">✅</span> Accept All`;
     acceptAllButton.onclick = acceptAllPII;
     
+    // Fill (faker) button - generates synthetic PII for redacted places
+    const fillButton = document.createElement("button");
+    fillButton.id = "pii-fill-button";
+    fillButton.innerHTML = `<span role="img" aria-label="Fill">🪄</span> Fill (faker)`;
+    fillButton.onclick = () => {
+        try {
+            fillRedactions();
+        } catch (e) {
+            console.error('[PII Extension] Error in Fill button:', e);
+        }
+    };
+    
+    // Revert PIIs button - replaces fake data in GPT response with original PII
+    const revertButton = document.createElement("button");
+    revertButton.id = "pii-revert-button";
+    revertButton.innerHTML = `<span role="img" aria-label="Revert">↩️</span> Revert PIIs`;
+    revertButton.onclick = () => {
+        try {
+            revertPIIsInResponse();
+        } catch (e) {
+            console.error('[PII Extension] Error in Revert button:', e);
+        }
+    };
+    
     // Model Selection Dropdown
     const modelSelectContainer = document.createElement("div");
     modelSelectContainer.id = "pii-model-container";
@@ -219,6 +243,8 @@ function injectScanButton() {
     container.appendChild(scanButton);
     container.appendChild(clearButton);
     container.appendChild(acceptAllButton);
+    container.appendChild(fillButton);
+    container.appendChild(revertButton);
     container.appendChild(modelSelectContainer);
     
     // Append the container directly to the body (CSS handles positioning to top-right)
@@ -375,6 +401,87 @@ function getRedactionLabel(piiType) {
     };
     return labels[piiType] || '[REDACTED]';
 }
+
+// ============================================================================
+// FAKER LIBRARY FOR SYNTHETIC DATA GENERATION
+// ============================================================================
+
+// Global memory structure to track: original PII -> masked version -> faked version
+// Structure: window.piiMapping = Map<uniqueId, {original, masked, fake, type, position}>
+if (!window.piiMapping) {
+    window.piiMapping = new Map();
+}
+
+// Generate unique ID for each PII mapping
+function generatePIIMappingId() {
+    return 'pii_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+}
+
+// Simple client-side Faker
+function randomChoice(arr) {
+    return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function generateFakeForType(type) {
+    // Normalize
+    const t = (type || '').toUpperCase();
+    switch (t) {
+        case 'PERSON':
+        case 'NAME':
+            return `${randomChoice(['Alex', 'Jordan', 'Taylor', 'Morgan', 'Casey', 'Riley', 'Sam', 'Jamie', 'Avery', 'Quinn'])} ${randomChoice(['Smith','Johnson','Brown','Garcia','Miller','Davis','Wilson','Moore','Taylor','Anderson'])}`;
+        case 'EMAIL':
+            const name = randomChoice(['alex', 'jordan', 'taylor', 'morgan', 'casey', 'riley', 'sam', 'jamie', 'avery', 'quinn']);
+            return `${name}${Math.floor(Math.random()*90+10)}@example.com`;
+        case 'PHONE':
+        case 'PHONE_NUMBER':
+            return `+1-${Math.floor(100+Math.random()*900)}-${Math.floor(100+Math.random()*900)}-${Math.floor(1000+Math.random()*9000)}`;
+        case 'LOCATION':
+        case 'ADDRESS':
+            return `${Math.floor(100+Math.random()*900)} ${randomChoice(['Oak St','Maple Ave','Pine Rd','Elm St','Cedar Ln','Main St','Park Ave','First St','Second Ave'])}, ${randomChoice(['Springfield','Riverton','Lakewood','Fairview','Greenwood','Riverside','Hillcrest','Brookside'])}`;
+        case 'ORGANIZATION':
+        case 'COMPANY':
+            return `${randomChoice(['Acme','Globex','Initech','Umbrella','Stark','Wayne','Oscorp','Cyberdyne','Tyrell'])} ${randomChoice(['LLC','Inc','Group','Co','Corp','Industries'])}`;
+        case 'CREDIT_CARD':
+            // Simple 16-digit pattern
+            return `${Math.floor(4000+Math.random()*5000)} ${Math.floor(1000+Math.random()*9000)} ${Math.floor(1000+Math.random()*9000)} ${Math.floor(1000+Math.random()*9000)}`;
+        case 'SSN':
+        case 'US_SSN':
+            return `${Math.floor(100+Math.random()*900)}-${Math.floor(10+Math.random()*90)}-${Math.floor(1000+Math.random()*9000)}`;
+        case 'IP_ADDRESS':
+            return `${Math.floor(1+Math.random()*220)}.${Math.floor(1+Math.random()*220)}.${Math.floor(1+Math.random()*220)}.${Math.floor(1+Math.random()*220)}`;
+        case 'URL':
+            return `https://www.${randomChoice(['example','demo','sample','testsite','placeholder'])}.com/${Math.random().toString(36).substring(2,8)}`;
+        case 'DATE_TIME':
+            return `${Math.floor(1+Math.random()*12)}/${Math.floor(1+Math.random()*28)}/20${Math.floor(20+Math.random()*6)}`;
+        default:
+            // Generic fallback - small random token
+            return `${randomChoice(['Pat','Lee','Jo','De','Kim','Max'])}${Math.floor(Math.random()*9000)}`;
+    }
+}
+
+// Map redaction labels to types
+function labelToType(label) {
+    if (!label) return null;
+    const l = label.replace(/\[|\]/g, '').toUpperCase();
+    switch (l) {
+        case 'NAME': return 'PERSON';
+        case 'EMAIL': return 'EMAIL';
+        case 'PHONE': return 'PHONE';
+        case 'LOCATION': return 'LOCATION';
+        case 'ORGANIZATION': return 'ORGANIZATION';
+        case 'REDACTED': return 'PERSON';
+        case 'ID': return 'ID';
+        case 'BANK_ACCOUNT': return 'BANK_ACCOUNT';
+        case 'SSN': return 'SSN';
+        case 'URL': return 'URL';
+        case 'DATE_TIME': return 'DATE_TIME';
+        default: return l;
+    }
+}
+
+// ============================================================================
+// END FAKER LIBRARY
+// ============================================================================
 
 // Check if a text position overlaps with already-redacted text
 function isRedactedText(text, start, end) {
@@ -992,6 +1099,501 @@ function acceptAllPII() {
         // Alert removed per user request
         // alert("An error occurred while processing PII. Please try again.");
     }
+}
+
+// Replace redaction labels in chat input and replace .pii-redacted spans in DOM with fake data
+// Stores mapping: original PII -> masked version -> faked version in window.piiMapping
+function fillRedactions() {
+    const pageType = detectPageType();
+    
+    // Regex for redaction labels like [NAME], [EMAIL], etc.
+    const labelRegex = /\[(NAME|LOCATION|EMAIL|PHONE|ORGANIZATION|REDACTED|ID|BANK_ACCOUNT|SSN|URL|DATE_TIME)\]/gi;
+    
+    if (pageType === 'chatgpt' || pageType === 'gemini') {
+        const textareaResult = findChatGPTTextarea();
+        if (!textareaResult || !textareaResult.textarea) {
+            console.warn('[PII Extension] Input field not found for filling faker data.');
+            return;
+        }
+        
+        const textarea = textareaResult.textarea;
+        let text = textarea.value || textarea.textContent || textarea.innerText || '';
+        if (!text || text.trim().length === 0) {
+            console.warn('[PII Extension] No text found in input to fill.');
+            return;
+        }
+        
+        let replacedCount = 0;
+        const mappings = []; // Store mappings for this fill operation
+        
+        // Replace each redaction label with fake data and track the mapping
+        let matchIndex = 0;
+        const newText = text.replace(labelRegex, (match, labelType) => {
+            const piiType = labelToType(match);
+            const fake = generateFakeForType(piiType);
+            const matchPosition = text.indexOf(match, matchIndex);
+            matchIndex = matchPosition + match.length;
+            
+            // Try to find existing mapping by masked label and type
+            let existingMapping = null;
+            for (const [id, mapping] of window.piiMapping.entries()) {
+                if (mapping.masked === match && mapping.type === piiType && mapping.fake === null) {
+                    existingMapping = mapping;
+                    break;
+                }
+            }
+            
+            if (existingMapping) {
+                // Update existing mapping with fake value
+                existingMapping.fake = fake;
+                existingMapping.filledTimestamp = Date.now();
+                mappings.push(existingMapping);
+                console.log(`[PII Extension] Updated existing mapping: ${existingMapping.original} -> ${existingMapping.masked} -> ${existingMapping.fake}`);
+            } else {
+                // Create new mapping if not found
+                const mappingId = generatePIIMappingId();
+                // Try to find original PII value from stored data
+                let originalValue = match; // Default to masked label if original not found
+                
+                // Try to match by position in original text if available
+                if (window.chatGPTOriginalText && window.chatGPTFoundPII) {
+                    // This is approximate - we'll use the masked label as fallback
+                    originalValue = match;
+                }
+                
+                const mapping = {
+                    id: mappingId,
+                    original: originalValue,
+                    masked: match,
+                    fake: fake,
+                    type: piiType,
+                    position: matchPosition,
+                    timestamp: Date.now(),
+                    filledTimestamp: Date.now()
+                };
+                
+                mappings.push(mapping);
+                window.piiMapping.set(mappingId, mapping);
+                console.log(`[PII Extension] Created new mapping: ${mapping.original} -> ${mapping.masked} -> ${mapping.fake}`);
+            }
+            
+            replacedCount++;
+            return fake;
+        });
+        
+        if (replacedCount === 0) {
+            console.log('[PII Extension] No redaction labels found to fill.');
+            return;
+        }
+        
+        const success = setChatGPTInputValue(newText, textarea);
+        if (success) {
+            // Remove overlays and popups
+            document.querySelectorAll('.pii-textarea-overlay, .pii-suggestion-popup').forEach(el => {
+                if (el._updatePosition) {
+                    window.removeEventListener('scroll', el._updatePosition, true);
+                    window.removeEventListener('resize', el._updatePosition);
+                }
+                el.remove();
+            });
+            
+            console.log(`[PII Extension] Filled ${replacedCount} redactions with synthetic data. Mappings stored in window.piiMapping`);
+        } else {
+            console.error('[PII Extension] Failed to update input field with fake data.');
+        }
+        
+        return;
+    }
+    
+    // For general pages: replace .pii-redacted spans
+    const redactedSpans = Array.from(document.querySelectorAll('.pii-redacted'));
+    if (redactedSpans.length === 0) {
+        console.log('[PII Extension] No redacted spans found on this page to fill.');
+        return;
+    }
+    
+    let filled = 0;
+    redactedSpans.forEach(span => {
+        try {
+            const originalValue = span.getAttribute('data-original-value') || span.textContent || '';
+            const piiType = span.getAttribute('data-pii-type') || labelToType(span.textContent) || 'PERSON';
+            const maskedLabel = span.textContent || '';
+            const fake = generateFakeForType(piiType);
+            
+            // Create mapping
+            const mappingId = generatePIIMappingId();
+            const mapping = {
+                id: mappingId,
+                original: originalValue,
+                masked: maskedLabel,
+                fake: fake,
+                type: piiType,
+                position: -1, // DOM position, not text position
+                timestamp: Date.now()
+            };
+            
+            window.piiMapping.set(mappingId, mapping);
+            
+            // Replace span with fake data
+            const textNode = document.createTextNode(fake);
+            // Preserve original in data attribute if not already present
+            if (!span.hasAttribute('data-original-value')) {
+                span.setAttribute('data-original-value', originalValue);
+            }
+            span.setAttribute('data-fake-value', fake);
+            span.setAttribute('data-mapping-id', mappingId);
+            
+            // Replace the text content but keep the span for styling
+            span.textContent = fake;
+            span.classList.remove('pii-redacted');
+            span.classList.add('pii-filled');
+            
+            filled++;
+            console.log(`[PII Extension] Mapping stored: ${mapping.original} -> ${mapping.masked} -> ${mapping.fake}`);
+        } catch (e) {
+            console.error('[PII Extension] Error filling a redacted span:', e);
+        }
+    });
+    
+    console.log(`[PII Extension] Filled ${filled} redacted spans with synthetic data. Mappings stored in window.piiMapping`);
+}
+
+// Revert fake PII data in ChatGPT/Gemini response back to original PII values
+function revertPIIsInResponse() {
+    const pageType = detectPageType();
+    
+    if (pageType !== 'chatgpt' && pageType !== 'gemini') {
+        console.warn('[PII Extension] Revert PIIs only works on ChatGPT/Gemini pages');
+        return;
+    }
+    
+    // Check if we have mappings
+    if (!window.piiMapping || window.piiMapping.size === 0) {
+        console.warn('[PII Extension] No PII mappings found. Please scan, accept, and fill PIIs first.');
+        return;
+    }
+    
+    // Get mappings that have fake data (were filled)
+    const filledMappings = [];
+    for (const [id, mapping] of window.piiMapping.entries()) {
+        if (mapping.fake && mapping.original) {
+            filledMappings.push(mapping);
+        }
+    }
+    
+    if (filledMappings.length === 0) {
+        console.warn('[PII Extension] No filled mappings found. Please fill PIIs first.');
+        return;
+    }
+    
+    console.log(`[PII Extension] Found ${filledMappings.length} filled mappings to revert`);
+    
+    // Find ChatGPT/Gemini response messages
+    // ChatGPT typically uses: div[data-message-author-role="assistant"]
+    // Also try other common selectors
+    const responseSelectors = [
+        'div[data-message-author-role="assistant"]',
+        'div[data-testid*="conversation-turn"]',
+        'div.markdown',
+        'div.prose',
+        'div[class*="message"]',
+        'div[class*="response"]',
+        'div[class*="assistant"]'
+    ];
+    
+    let responseElements = [];
+    for (const selector of responseSelectors) {
+        try {
+            const elements = document.querySelectorAll(selector);
+            if (elements.length > 0) {
+                responseElements = Array.from(elements);
+                console.log(`[PII Extension] Found ${elements.length} potential response elements with selector: ${selector}`);
+                break;
+            }
+        } catch (e) {
+            console.warn(`[PII Extension] Error with selector ${selector}:`, e);
+        }
+    }
+    
+    // If no specific selector worked, try to find the latest message in the conversation
+    if (responseElements.length === 0) {
+        // Try to find conversation container and get latest message
+        const conversationContainers = [
+            'div[class*="conversation"]',
+            'div[class*="chat"]',
+            'main',
+            'div[role="main"]'
+        ];
+        
+        for (const containerSelector of conversationContainers) {
+            try {
+                const container = document.querySelector(containerSelector);
+                if (container) {
+                    // Get all text nodes or divs that might contain the response
+                    const allDivs = container.querySelectorAll('div');
+                    if (allDivs.length > 0) {
+                        // Get the last few divs (likely the latest response)
+                        responseElements = Array.from(allDivs).slice(-5);
+                        console.log(`[PII Extension] Using fallback: found ${responseElements.length} elements from container`);
+                        break;
+                    }
+                }
+            } catch (e) {
+                console.warn(`[PII Extension] Error with container selector ${containerSelector}:`, e);
+            }
+        }
+    }
+    
+    if (responseElements.length === 0) {
+        console.warn('[PII Extension] Could not find ChatGPT response elements. Trying to find by text content...');
+        
+        // Last resort: search entire document for fake values
+        let revertedCount = 0;
+        let totalReplacements = 0;
+        
+        // Sort mappings by fake value length (longest first) to avoid partial replacements
+        const sortedMappings = filledMappings.sort((a, b) => b.fake.length - a.fake.length);
+        
+        // Process each mapping
+        for (const mapping of sortedMappings) {
+            const fakeValue = mapping.fake;
+            const originalValue = mapping.original;
+            
+            // Escape special regex characters
+            const escapedFake = fakeValue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            
+            // Create multiple regex patterns for better matching
+            const regexPatterns = [];
+            
+            if (mapping.type === 'PERSON' || mapping.type === 'NAME') {
+                // For names, try multiple patterns:
+                // 1. Full name with word boundaries
+                regexPatterns.push(new RegExp(`\\b${escapedFake}\\b`, 'gi'));
+                
+                // 2. Split name into first and last (GPT might use just first or last name)
+                const nameParts = fakeValue.split(/\s+/);
+                if (nameParts.length >= 2) {
+                    const firstName = nameParts[0];
+                    const lastName = nameParts[nameParts.length - 1];
+                    const originalParts = originalValue.split(/\s+/);
+                    
+                    // Match first name only if original also has it
+                    if (originalParts.length >= 1) {
+                        regexPatterns.push(new RegExp(`\\b${firstName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi'));
+                    }
+                    // Match last name only if original also has it
+                    if (originalParts.length >= 2) {
+                        regexPatterns.push(new RegExp(`\\b${lastName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi'));
+                    }
+                }
+            } else if (mapping.type === 'LOCATION') {
+                // For locations, try full match and partial matches
+                regexPatterns.push(new RegExp(`\\b${escapedFake}\\b`, 'gi'));
+                
+                // Also try matching parts of the address
+                const locationParts = fakeValue.split(/[,\s]+/).filter(p => p.length > 2);
+                locationParts.forEach(part => {
+                    const escapedPart = part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    regexPatterns.push(new RegExp(`\\b${escapedPart}\\b`, 'gi'));
+                });
+            } else {
+                // For emails, phones, etc., use exact match with flexible whitespace
+                regexPatterns.push(new RegExp(escapedFake.replace(/\s+/g, '\\s+'), 'gi'));
+            }
+            
+            // Try each pattern
+            for (const regex of regexPatterns) {
+                // Search and replace in all text nodes
+                const walker = document.createTreeWalker(
+                    document.body,
+                    NodeFilter.SHOW_TEXT,
+                    null,
+                    false
+                );
+                
+                let node;
+                const nodesToUpdate = [];
+                
+                while (node = walker.nextNode()) {
+                    if (node.textContent && regex.test(node.textContent)) {
+                        nodesToUpdate.push(node);
+                    }
+                }
+                
+                // Replace in found nodes
+                for (const textNode of nodesToUpdate) {
+                    const originalText = textNode.textContent;
+                    
+                    // Determine replacement value based on what was matched
+                    let replacementValue = originalValue;
+                    if (mapping.type === 'PERSON' || mapping.type === 'NAME') {
+                        // If matching a partial name, replace with corresponding part
+                        const nameParts = fakeValue.split(/\s+/);
+                        const originalParts = originalValue.split(/\s+/);
+                        const matchText = originalText.match(regex)?.[0] || '';
+                        
+                        if (nameParts.length >= 2 && originalParts.length >= 2) {
+                            if (matchText.toLowerCase() === nameParts[0].toLowerCase()) {
+                                replacementValue = originalParts[0]; // First name
+                            } else if (matchText.toLowerCase() === nameParts[nameParts.length - 1].toLowerCase()) {
+                                replacementValue = originalParts[originalParts.length - 1]; // Last name
+                            }
+                        }
+                    }
+                    
+                    const newText = originalText.replace(regex, (match) => {
+                        // Case-sensitive replacement to preserve formatting
+                        if (match === fakeValue) {
+                            return replacementValue;
+                        } else if (match.toLowerCase() === fakeValue.toLowerCase()) {
+                            // Preserve case of first letter if different
+                            if (match[0] === match[0].toUpperCase() && replacementValue[0]) {
+                                return replacementValue[0].toUpperCase() + replacementValue.slice(1);
+                            }
+                            return replacementValue;
+                        } else if (mapping.type === 'PERSON' || mapping.type === 'NAME') {
+                            // Partial name match
+                            return replacementValue;
+                        }
+                        return match;
+                    });
+                    
+                    if (newText !== originalText) {
+                        textNode.textContent = newText;
+                        totalReplacements++;
+                    }
+                }
+                
+                if (nodesToUpdate.length > 0) {
+                    revertedCount++;
+                    console.log(`[PII Extension] Reverted: "${fakeValue}" -> "${originalValue}" (${nodesToUpdate.length} occurrences)`);
+                    break; // Found matches, move to next mapping
+                }
+            }
+        }
+        
+        console.log(`[PII Extension] Revert complete: ${revertedCount} mappings reverted, ${totalReplacements} total replacements`);
+        return;
+    }
+    
+    // Process response elements
+    let totalReverted = 0;
+    let totalReplacements = 0;
+    
+    // Sort mappings by fake value length (longest first) to avoid partial replacements
+    const sortedMappings = filledMappings.sort((a, b) => b.fake.length - a.fake.length);
+    
+    for (const element of responseElements) {
+        let elementText = element.textContent || element.innerText || '';
+        if (!elementText.trim()) continue;
+        
+        let modified = false;
+        let modifiedText = elementText;
+        
+        // Process each mapping
+        for (const mapping of sortedMappings) {
+            const fakeValue = mapping.fake;
+            const originalValue = mapping.original;
+            
+            // Escape special regex characters
+            const escapedFake = fakeValue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            
+            // Create multiple regex patterns for better matching
+            const regexPatterns = [];
+            
+            if (mapping.type === 'PERSON' || mapping.type === 'NAME') {
+                // For names, try multiple patterns
+                regexPatterns.push(new RegExp(`\\b${escapedFake}\\b`, 'gi'));
+                
+                // Split name into parts for partial matching
+                const nameParts = fakeValue.split(/\s+/);
+                if (nameParts.length >= 2) {
+                    const firstName = nameParts[0];
+                    const lastName = nameParts[nameParts.length - 1];
+                    const originalParts = originalValue.split(/\s+/);
+                    
+                    if (originalParts.length >= 1) {
+                        regexPatterns.push(new RegExp(`\\b${firstName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi'));
+                    }
+                    if (originalParts.length >= 2) {
+                        regexPatterns.push(new RegExp(`\\b${lastName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi'));
+                    }
+                }
+            } else if (mapping.type === 'LOCATION') {
+                regexPatterns.push(new RegExp(`\\b${escapedFake}\\b`, 'gi'));
+            } else {
+                regexPatterns.push(new RegExp(escapedFake.replace(/\s+/g, '\\s+'), 'gi'));
+            }
+            
+            // Try each pattern
+            for (const regex of regexPatterns) {
+                const matches = modifiedText.match(regex);
+                if (matches && matches.length > 0) {
+                    // Determine replacement value
+                    let replacementValue = originalValue;
+                    if (mapping.type === 'PERSON' || mapping.type === 'NAME') {
+                        const nameParts = fakeValue.split(/\s+/);
+                        const originalParts = originalValue.split(/\s+/);
+                        const firstMatch = matches[0];
+                        
+                        if (nameParts.length >= 2 && originalParts.length >= 2) {
+                            if (firstMatch.toLowerCase() === nameParts[0].toLowerCase()) {
+                                replacementValue = originalParts[0];
+                            } else if (firstMatch.toLowerCase() === nameParts[nameParts.length - 1].toLowerCase()) {
+                                replacementValue = originalParts[originalParts.length - 1];
+                            }
+                        }
+                    }
+                    
+                    // Replace with original, preserving case if possible
+                    modifiedText = modifiedText.replace(regex, (match) => {
+                        if (match === fakeValue) {
+                            return replacementValue;
+                        } else if (match.toLowerCase() === fakeValue.toLowerCase()) {
+                            if (match[0] === match[0].toUpperCase() && replacementValue[0]) {
+                                return replacementValue[0].toUpperCase() + replacementValue.slice(1);
+                            }
+                            return replacementValue;
+                        } else if (mapping.type === 'PERSON' || mapping.type === 'NAME') {
+                            return replacementValue;
+                        }
+                        return match;
+                    });
+                    
+                    modified = true;
+                    totalReplacements += matches.length;
+                    console.log(`[PII Extension] Reverted in response: "${fakeValue}" -> "${replacementValue}" (${matches.length} occurrences)`);
+                    break; // Found matches, move to next mapping
+                }
+            }
+        }
+        
+        if (modified) {
+            // Update the element's text content
+            // For contenteditable or complex structures, we need to be careful
+            if (element.contentEditable === 'true') {
+                element.textContent = modifiedText;
+            } else {
+                // Try to preserve structure by updating text nodes
+                const walker = document.createTreeWalker(
+                    element,
+                    NodeFilter.SHOW_TEXT,
+                    null,
+                    false
+                );
+                
+                let textNode;
+                let remainingText = modifiedText;
+                
+                // Simple approach: replace all text content
+                element.textContent = modifiedText;
+            }
+            
+            totalReverted++;
+        }
+    }
+    
+    console.log(`[PII Extension] Revert complete: ${totalReverted} response elements updated, ${totalReplacements} total replacements`);
 }
 
 // Handle model selection change
@@ -2725,6 +3327,25 @@ function acceptAllPIIForChatGPT() {
         console.log(`[PII Extension] Redacted ${nonOverlappingSpans.length} PII items using offset tracking system (${spans.length} total found, ${spans.length - nonOverlappingSpans.length} overlaps removed)`);
         console.log(`[PII Extension] Original text length: ${currentText.length}, Redacted length: ${result.text.length}`);
         
+        // Store mappings for original PII -> masked version (for future fake data filling)
+        // This allows us to track: original -> masked -> fake
+        nonOverlappingSpans.forEach((span, index) => {
+            const mappingId = generatePIIMappingId();
+            const maskedLabel = getRedactionLabel(span.entity.type);
+            const mapping = {
+                id: mappingId,
+                original: span.entity.value, // Original PII value
+                masked: maskedLabel, // The redaction label like [NAME]
+                fake: null, // Will be filled when user clicks Fill button
+                type: span.entity.type,
+                position: span.start, // Position in original text
+                timestamp: Date.now()
+            };
+            
+            window.piiMapping.set(mappingId, mapping);
+            console.log(`[PII Extension] Pre-stored mapping for future fill: ${mapping.original} -> ${mapping.masked}`);
+        });
+        
         // Update input field safely (works for both ChatGPT and Gemini)
         const success = setChatGPTInputValue(result.text, textarea);
         if (success) {
@@ -2740,10 +3361,11 @@ function acceptAllPIIForChatGPT() {
             // Alert removed per user request
             // alert(`Successfully redacted ${nonOverlappingSpans.length} PII items. Your message is ready to send.`);
             
-            // Clean up stored data
-            delete window.chatGPTOriginalText;
-            delete window.chatGPTFoundPII;
-            delete window.chatGPTTextarea;
+            // Keep stored data for fill operation (don't delete yet)
+            // We'll clean it up after fill or when user sends message
+            // delete window.chatGPTOriginalText;
+            // delete window.chatGPTFoundPII;
+            // delete window.chatGPTTextarea;
         } else {
             // Alert removed per user request
             // alert(`Failed to update ${isGemini ? 'Gemini' : 'ChatGPT'} input. Please try again.`);
